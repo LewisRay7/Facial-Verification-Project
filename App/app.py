@@ -165,9 +165,10 @@ def register_student_page() -> None:
 def verify_student_page() -> None:
     st.subheader("Exam Verification")
 
-    students = list_students()
+    search_text = st.text_input("Find student", placeholder="Search by student number, name, or program")
+    students = search_students(search_text)
     if not students:
-        st.info("Register at least one student before verification.")
+        st.info("No matching students found. Register the student or clear the search.")
         return
 
     options = {
@@ -317,6 +318,32 @@ def logs_page() -> None:
         use_container_width=True,
         hide_index=True,
     )
+
+    preview_options = {
+        f"{row['verified_at']} | {row['student_number']} | {row['result']}": row
+        for row in logs
+        if row.get("captured_image_path")
+    }
+    if not preview_options:
+        return
+
+    selected_log_label = st.selectbox(
+        "Preview captured verification image",
+        list(preview_options.keys()),
+    )
+    selected_log = preview_options[selected_log_label]
+    captured_path = Path(selected_log["captured_image_path"])
+    if captured_path.exists():
+        st.image(
+            str(captured_path),
+            caption=(
+                f"{selected_log['student_number']} - {selected_log['full_name']} "
+                f"({selected_log['result']})"
+            ),
+            width=300,
+        )
+    else:
+        st.warning("The captured image file for this log entry is no longer available.")
 
 
 def students_page() -> None:
