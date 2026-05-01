@@ -1,0 +1,2 @@
+deepface==0.0.91
+tf-keras==2.16.0

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+Data/exam_verification.db
+Data/student_photos/
+Data/captures/
+
+.streamlit/
+.env
+*.log
