@@ -5,6 +5,8 @@ Local prototype for a FaceNet-based automated exam verification system. It lets 
 ## What This Prototype Does
 
 - registers students with student number, name, program, and photo
+- edits student details and replaces registered photos
+- deactivates students without removing old verification logs
 - captures a live face using the webcam
 - verifies the live face against the registered photo
 - records verification result, score, backend, and time
@@ -75,6 +77,8 @@ Streamlit will open the app in your browser.
 7. Show the Verified / Not Verified result.
 8. Open Verification Logs to show the recorded attempt and captured image.
 9. Open System Evaluation to show accuracy, false accepts, false rejects, and response time.
+
+Student records can be managed from the Students tab. Use it to correct names, update program/class details, replace photos, or deactivate students who should no longer appear in verification. Deactivation keeps old logs for reporting.
 
 During testing, set the expected outcome in the Verify Student tab:
 

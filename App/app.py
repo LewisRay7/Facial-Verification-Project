@@ -22,6 +22,8 @@ from SRC.database import (
     list_logs,
     list_students,
     search_students,
+    set_student_active,
+    update_student_details,
     update_student_photo,
 )
 from SRC.face_matcher import (
@@ -348,22 +350,24 @@ def logs_page() -> None:
 
 def students_page() -> None:
     st.subheader("Registered Students")
+    show_inactive = st.checkbox("Show inactive students")
     search_text = st.text_input("Search by student number, name, or program")
-    students = search_students(search_text)
+    students = search_students(search_text, active_only=not show_inactive)
 
     if not students:
         st.info("No students found.")
         return
 
     frame = pd.DataFrame([dict(row) for row in students])
+    frame["status"] = frame["active"].apply(lambda value: "Active" if value else "Inactive")
     st.dataframe(
-        frame[["student_number", "full_name", "program", "created_at"]],
+        frame[["student_number", "full_name", "program", "status", "created_at"]],
         use_container_width=True,
         hide_index=True,
     )
 
     selected_label = st.selectbox(
-        "Preview student photo",
+        "Manage student",
         [f"{row['student_number']} - {row['full_name']}" for row in students],
     )
     selected_student = students[
@@ -371,7 +375,76 @@ def students_page() -> None:
             selected_label
         )
     ]
-    st.image(selected_student["photo_path"], width=260)
+    current_photo = Path(selected_student["photo_path"])
+
+    left, right = st.columns([1, 1])
+    with left:
+        if current_photo.exists():
+            st.image(str(current_photo), caption="Current student photo", width=260)
+        else:
+            st.warning("The stored photo file for this student is missing.")
+
+    with right:
+        with st.form(f"manage_student_{selected_student['id']}"):
+            updated_student_number = st.text_input(
+                "Student number",
+                value=selected_student["student_number"],
+            )
+            updated_full_name = st.text_input(
+                "Full name",
+                value=selected_student["full_name"],
+            )
+            updated_program = st.text_input(
+                "Program / class",
+                value=selected_student["program"] or "",
+            )
+            replacement_photo = st.file_uploader(
+                "Replace student photo",
+                type=["jpg", "jpeg", "png"],
+                help="Leave empty if the current photo should stay unchanged.",
+            )
+            save_changes = st.form_submit_button("Save student changes", type="primary")
+
+        if save_changes:
+            if not updated_student_number.strip() or not updated_full_name.strip():
+                st.error("Student number and full name are required.")
+            else:
+                try:
+                    update_student_details(
+                        int(selected_student["id"]),
+                        updated_student_number,
+                        updated_full_name,
+                        updated_program,
+                    )
+                    if replacement_photo is not None:
+                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                        filename = f"{safe_file_part(updated_student_number)}_{timestamp}.jpg"
+                        photo_path = PHOTO_DIR / filename
+                        save_uploaded_image(replacement_photo, photo_path)
+                        update_student_photo(int(selected_student["id"]), photo_path)
+                    st.success("Student record updated.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not update student: {exc}")
+
+        is_active = bool(selected_student["active"])
+        if is_active:
+            confirm_deactivate = st.checkbox(
+                "I understand this student will be hidden from verification.",
+                key=f"confirm_deactivate_{selected_student['id']}",
+            )
+            if st.button(
+                "Deactivate student",
+                disabled=not confirm_deactivate,
+                key=f"deactivate_{selected_student['id']}",
+            ):
+                set_student_active(int(selected_student["id"]), False)
+                st.success("Student deactivated. Existing logs were kept.")
+                st.rerun()
+        elif st.button("Reactivate student", key=f"reactivate_{selected_student['id']}"):
+            set_student_active(int(selected_student["id"]), True)
+            st.success("Student reactivated.")
+            st.rerun()
 
 
 def evaluation_page() -> None:

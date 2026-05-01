@@ -42,8 +42,23 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_student_columns(connection)
         _ensure_log_columns(connection)
         connection.commit()
+
+
+def _ensure_student_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(students)").fetchall()
+    }
+    migrations = {
+        "active": "ALTER TABLE students ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+        "updated_at": "ALTER TABLE students ADD COLUMN updated_at TEXT",
+    }
+    for column_name, statement in migrations.items():
+        if column_name not in existing_columns:
+            connection.execute(statement)
 
 
 def _ensure_log_columns(connection: sqlite3.Connection) -> None:
@@ -90,34 +105,79 @@ def add_student(
 def update_student_photo(student_id: int, photo_path: Path) -> None:
     with closing(get_connection()) as connection:
         connection.execute(
-            "UPDATE students SET photo_path = ? WHERE id = ?",
-            (str(photo_path), student_id),
+            "UPDATE students SET photo_path = ?, updated_at = ? WHERE id = ?",
+            (str(photo_path), datetime.now().isoformat(timespec="seconds"), student_id),
         )
         connection.commit()
 
 
-def list_students() -> list[sqlite3.Row]:
+def update_student_details(
+    student_id: int,
+    student_number: str,
+    full_name: str,
+    program: str,
+) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            UPDATE students
+            SET student_number = ?, full_name = ?, program = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                student_number.strip(),
+                full_name.strip(),
+                program.strip(),
+                datetime.now().isoformat(timespec="seconds"),
+                student_id,
+            ),
+        )
+        connection.commit()
+
+
+def set_student_active(student_id: int, active: bool) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            UPDATE students
+            SET active = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                1 if active else 0,
+                datetime.now().isoformat(timespec="seconds"),
+                student_id,
+            ),
+        )
+        connection.commit()
+
+
+def list_students(active_only: bool = True) -> list[sqlite3.Row]:
+    active_filter = "WHERE active = 1" if active_only else ""
     with closing(get_connection()) as connection:
         return list(
             connection.execute(
-                """
-                SELECT id, student_number, full_name, program, photo_path, created_at
+                f"""
+                SELECT id, student_number, full_name, program, photo_path, created_at, active
                 FROM students
+                {active_filter}
                 ORDER BY full_name COLLATE NOCASE
                 """
             )
         )
 
 
-def search_students(search_text: str = "") -> list[sqlite3.Row]:
+def search_students(search_text: str = "", active_only: bool = True) -> list[sqlite3.Row]:
     query = f"%{search_text.strip()}%"
+    active_filter = "AND active = 1" if active_only else ""
     with closing(get_connection()) as connection:
         return list(
             connection.execute(
-                """
-                SELECT id, student_number, full_name, program, photo_path, created_at
+                f"""
+                SELECT id, student_number, full_name, program, photo_path, created_at, active
                 FROM students
-                WHERE student_number LIKE ? OR full_name LIKE ? OR program LIKE ?
+                WHERE (student_number LIKE ? OR full_name LIKE ? OR program LIKE ?)
+                {active_filter}
                 ORDER BY full_name COLLATE NOCASE
                 """,
                 (query, query, query),
@@ -129,7 +189,7 @@ def get_student(student_id: int) -> sqlite3.Row | None:
     with closing(get_connection()) as connection:
         return connection.execute(
             """
-            SELECT id, student_number, full_name, program, photo_path, created_at
+            SELECT id, student_number, full_name, program, photo_path, created_at, active
             FROM students
             WHERE id = ?
             """,
@@ -141,7 +201,7 @@ def get_student_by_number(student_number: str) -> sqlite3.Row | None:
     with closing(get_connection()) as connection:
         return connection.execute(
             """
-            SELECT id, student_number, full_name, program, photo_path, created_at
+            SELECT id, student_number, full_name, program, photo_path, created_at, active
             FROM students
             WHERE student_number = ?
             """,
@@ -213,7 +273,7 @@ def list_logs(limit: int = 100) -> list[dict[str, Any]]:
 def dashboard_summary() -> dict[str, int]:
     with closing(get_connection()) as connection:
         total_students = connection.execute(
-            "SELECT COUNT(*) FROM students"
+            "SELECT COUNT(*) FROM students WHERE active = 1"
         ).fetchone()[0]
         total_attempts = connection.execute(
             "SELECT COUNT(*) FROM verification_logs"
