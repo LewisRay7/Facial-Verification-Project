@@ -59,8 +59,9 @@ def verify_faces(
             return deepface_result
         if backend_preference == "facenet":
             raise FaceMatchError(
-                "FaceNet could not complete verification. Use OpenCV fallback for demo, "
-                "or close other apps and try FaceNet again."
+                "FaceNet could not complete verification. Capture a clearer front-facing "
+                "image with better lighting, or use Auto so the system can fall back to "
+                "OpenCV for the demo."
             )
     return _verify_with_opencv(reference_image, live_image, lightweight_threshold)
 
@@ -71,23 +72,24 @@ def _generate_deepface_embedding(image_path: Path) -> list[float] | None:
     except Exception:
         return None
 
-    try:
-        representations = DeepFace.represent(
-            img_path=str(image_path),
-            model_name="Facenet",
-            detector_backend="opencv",
-            enforce_detection=True,
-            align=True,
-        )
-    except Exception:
-        return None
+    for enforce_detection in (True, False):
+        try:
+            representations = DeepFace.represent(
+                img_path=str(image_path),
+                model_name="Facenet",
+                detector_backend="opencv",
+                enforce_detection=enforce_detection,
+                align=True,
+            )
+        except Exception:
+            continue
 
-    if not representations:
-        return None
-    embedding = representations[0].get("embedding")
-    if not embedding:
-        return None
-    return [float(value) for value in embedding]
+        if not representations:
+            continue
+        embedding = representations[0].get("embedding")
+        if embedding:
+            return [float(value) for value in embedding]
+    return None
 
 
 def _verify_with_stored_embedding(
@@ -126,17 +128,22 @@ def _verify_with_deepface(reference_image: Path, live_image: Path) -> MatchResul
     except Exception:
         return None
 
-    try:
-        result = DeepFace.verify(
-            img1_path=str(reference_image),
-            img2_path=str(live_image),
-            model_name="Facenet",
-            detector_backend="opencv",
-            distance_metric="cosine",
-            enforce_detection=True,
-            align=True,
-        )
-    except Exception:
+    result = None
+    for enforce_detection in (True, False):
+        try:
+            result = DeepFace.verify(
+                img1_path=str(reference_image),
+                img2_path=str(live_image),
+                model_name="Facenet",
+                detector_backend="opencv",
+                distance_metric="cosine",
+                enforce_detection=enforce_detection,
+                align=True,
+            )
+            break
+        except Exception:
+            continue
+    if result is None:
         return None
 
     distance = float(result.get("distance", 1.0))

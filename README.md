@@ -24,6 +24,8 @@ Do not train FaceNet from scratch on a 4GB RAM laptop.
 
 When the optional FaceNet backend is installed, the system stores a face embedding for each registered student photo. Verification can then compare the live webcam face against the stored embedding, which is more reliable than comparing raw images from different devices.
 
+If FaceNet struggles to detect a face in a webcam capture, the app tries a relaxed embedding pass before falling back. For best results, capture a clear front-facing face with good lighting and avoid motion blur.
+
 ## Setup
 
 Install Python 3.10 or 3.11 first. During installation, tick "Add Python to PATH".
