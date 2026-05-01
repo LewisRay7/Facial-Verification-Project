@@ -28,6 +28,7 @@ from SRC.database import (
 )
 from SRC.face_matcher import (
     FaceMatchError,
+    generate_face_embedding,
     save_camera_image,
     save_uploaded_image,
     verify_faces,
@@ -82,6 +83,13 @@ def log_accuracy_result(row: pd.Series) -> str:
     if expected == "MATCH" and result == "NOT VERIFIED":
         return "False reject"
     return "Not evaluated"
+
+
+def create_embedding_for_photo(photo_path: Path) -> tuple[str | None, str | None]:
+    embedding_result = generate_face_embedding(photo_path)
+    if embedding_result is None:
+        return None, None
+    return embedding_result
 
 
 def dashboard_page() -> None:
@@ -153,12 +161,32 @@ def register_student_page() -> None:
 
     try:
         save_uploaded_image(uploaded_photo, photo_path)
+        face_embedding, embedding_backend = create_embedding_for_photo(photo_path)
         if existing:
-            update_student_photo(int(existing["id"]), photo_path)
+            update_student_photo(
+                int(existing["id"]),
+                photo_path,
+                face_embedding=face_embedding,
+                embedding_backend=embedding_backend,
+            )
             st.warning("This student number already existed, so the stored photo was updated.")
         else:
-            add_student(student_number, full_name, program, photo_path)
+            add_student(
+                student_number,
+                full_name,
+                program,
+                photo_path,
+                face_embedding=face_embedding,
+                embedding_backend=embedding_backend,
+            )
             st.success("Student registered successfully.")
+        if embedding_backend:
+            st.info(f"Face embedding stored using {embedding_backend}.")
+        else:
+            st.info(
+                "Face embedding was not stored because the optional FaceNet backend is not ready. "
+                "The system will use the OpenCV fallback until FaceNet is installed."
+            )
         st.image(str(photo_path), caption="Stored student photo", width=260)
     except Exception as exc:
         st.error(f"Could not register student: {exc}")
@@ -238,6 +266,7 @@ def verify_student_page() -> None:
         result = verify_faces(
             Path(selected_student["photo_path"]),
             capture_path,
+            reference_embedding=selected_student["face_embedding"],
             lightweight_threshold=lightweight_threshold,
             backend_preference=backend_preference,
         )
@@ -383,6 +412,30 @@ def students_page() -> None:
             st.image(str(current_photo), caption="Current student photo", width=260)
         else:
             st.warning("The stored photo file for this student is missing.")
+        if selected_student["embedding_backend"]:
+            st.info(f"Stored embedding: {selected_student['embedding_backend']}")
+        else:
+            st.warning("No stored face embedding yet. Generate one after installing FaceNet.")
+        if st.button(
+            "Generate / refresh face embedding",
+            disabled=not current_photo.exists(),
+            key=f"embedding_{selected_student['id']}",
+        ):
+            face_embedding, embedding_backend = create_embedding_for_photo(current_photo)
+            if embedding_backend:
+                update_student_photo(
+                    int(selected_student["id"]),
+                    current_photo,
+                    face_embedding=face_embedding,
+                    embedding_backend=embedding_backend,
+                )
+                st.success("Face embedding updated.")
+                st.rerun()
+            else:
+                st.error(
+                    "Could not create a FaceNet embedding. Install the optional FaceNet "
+                    "backend, then try again with a clear front-facing photo."
+                )
 
     with right:
         with st.form(f"manage_student_{selected_student['id']}"):
@@ -421,7 +474,13 @@ def students_page() -> None:
                         filename = f"{safe_file_part(updated_student_number)}_{timestamp}.jpg"
                         photo_path = PHOTO_DIR / filename
                         save_uploaded_image(replacement_photo, photo_path)
-                        update_student_photo(int(selected_student["id"]), photo_path)
+                        face_embedding, embedding_backend = create_embedding_for_photo(photo_path)
+                        update_student_photo(
+                            int(selected_student["id"]),
+                            photo_path,
+                            face_embedding=face_embedding,
+                            embedding_backend=embedding_backend,
+                        )
                     st.success("Student record updated.")
                     st.rerun()
                 except Exception as exc:

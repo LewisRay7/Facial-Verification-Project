@@ -9,6 +9,7 @@ Local prototype for a FaceNet-based automated exam verification system. It lets 
 - deactivates students without removing old verification logs
 - captures a live face using the webcam
 - verifies the live face against the registered photo
+- stores FaceNet embeddings when the optional backend is available
 - records verification result, score, backend, and time
 - records expected outcome, threshold, and response time for evaluation tests
 - previews captured verification images from the logs
@@ -20,6 +21,8 @@ Local prototype for a FaceNet-based automated exam verification system. It lets 
 This project is designed for a low-resource laptop. It uses a pretrained FaceNet model through DeepFace when available. If FaceNet cannot run yet, it falls back to a lightweight OpenCV comparison so that the app and demo workflow still function.
 
 Do not train FaceNet from scratch on a 4GB RAM laptop.
+
+When the optional FaceNet backend is installed, the system stores a face embedding for each registered student photo. Verification can then compare the live webcam face against the stored embedding, which is more reliable than comparing raw images from different devices.
 
 ## Setup
 
@@ -51,6 +54,8 @@ python -m pip install -r requirements-facenet.txt
 ```
 
 The first FaceNet verification may need internet access to download pretrained model files. If it cannot load FaceNet, the app automatically uses the OpenCV fallback so registration, verification, and logs still work.
+
+After installing the FaceNet backend, open the Students tab and use "Generate / refresh face embedding" for older student records that were created before FaceNet was available.
 
 ## Run
 

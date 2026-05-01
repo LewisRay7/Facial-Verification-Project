@@ -55,6 +55,8 @@ def _ensure_student_columns(connection: sqlite3.Connection) -> None:
     migrations = {
         "active": "ALTER TABLE students ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
         "updated_at": "ALTER TABLE students ADD COLUMN updated_at TEXT",
+        "face_embedding": "ALTER TABLE students ADD COLUMN face_embedding TEXT",
+        "embedding_backend": "ALTER TABLE students ADD COLUMN embedding_backend TEXT",
     }
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
@@ -81,20 +83,25 @@ def add_student(
     full_name: str,
     program: str,
     photo_path: Path,
+    face_embedding: str | None = None,
+    embedding_backend: str | None = None,
 ) -> int:
     with closing(get_connection()) as connection:
         cursor = connection.execute(
             """
             INSERT INTO students (
-                student_number, full_name, program, photo_path, created_at
+                student_number, full_name, program, photo_path,
+                face_embedding, embedding_backend, created_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student_number.strip(),
                 full_name.strip(),
                 program.strip(),
                 str(photo_path),
+                face_embedding,
+                embedding_backend,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -102,11 +109,26 @@ def add_student(
         return int(cursor.lastrowid)
 
 
-def update_student_photo(student_id: int, photo_path: Path) -> None:
+def update_student_photo(
+    student_id: int,
+    photo_path: Path,
+    face_embedding: str | None = None,
+    embedding_backend: str | None = None,
+) -> None:
     with closing(get_connection()) as connection:
         connection.execute(
-            "UPDATE students SET photo_path = ?, updated_at = ? WHERE id = ?",
-            (str(photo_path), datetime.now().isoformat(timespec="seconds"), student_id),
+            """
+            UPDATE students
+            SET photo_path = ?, face_embedding = ?, embedding_backend = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                str(photo_path),
+                face_embedding,
+                embedding_backend,
+                datetime.now().isoformat(timespec="seconds"),
+                student_id,
+            ),
         )
         connection.commit()
 
@@ -158,7 +180,9 @@ def list_students(active_only: bool = True) -> list[sqlite3.Row]:
         return list(
             connection.execute(
                 f"""
-                SELECT id, student_number, full_name, program, photo_path, created_at, active
+                SELECT
+                    id, student_number, full_name, program, photo_path, created_at,
+                    active, face_embedding, embedding_backend
                 FROM students
                 {active_filter}
                 ORDER BY full_name COLLATE NOCASE
@@ -174,7 +198,9 @@ def search_students(search_text: str = "", active_only: bool = True) -> list[sql
         return list(
             connection.execute(
                 f"""
-                SELECT id, student_number, full_name, program, photo_path, created_at, active
+                SELECT
+                    id, student_number, full_name, program, photo_path, created_at,
+                    active, face_embedding, embedding_backend
                 FROM students
                 WHERE (student_number LIKE ? OR full_name LIKE ? OR program LIKE ?)
                 {active_filter}
@@ -189,7 +215,9 @@ def get_student(student_id: int) -> sqlite3.Row | None:
     with closing(get_connection()) as connection:
         return connection.execute(
             """
-            SELECT id, student_number, full_name, program, photo_path, created_at, active
+            SELECT
+                id, student_number, full_name, program, photo_path, created_at,
+                active, face_embedding, embedding_backend
             FROM students
             WHERE id = ?
             """,
@@ -201,7 +229,9 @@ def get_student_by_number(student_number: str) -> sqlite3.Row | None:
     with closing(get_connection()) as connection:
         return connection.execute(
             """
-            SELECT id, student_number, full_name, program, photo_path, created_at, active
+            SELECT
+                id, student_number, full_name, program, photo_path, created_at,
+                active, face_embedding, embedding_backend
             FROM students
             WHERE student_number = ?
             """,

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import cv2
@@ -20,6 +21,13 @@ class FaceMatchError(RuntimeError):
     pass
 
 
+def generate_face_embedding(image_path: Path) -> tuple[str, str] | None:
+    embedding = _generate_deepface_embedding(image_path)
+    if embedding is None:
+        return None
+    return json.dumps(embedding), "DeepFace FaceNet embedding"
+
+
 def save_uploaded_image(uploaded_file, destination: Path) -> Path:
     destination.parent.mkdir(exist_ok=True)
     image = Image.open(uploaded_file).convert("RGB")
@@ -39,11 +47,14 @@ def save_camera_image(image_file, destination: Path) -> Path:
 def verify_faces(
     reference_image: Path,
     live_image: Path,
+    reference_embedding: str | None = None,
     lightweight_threshold: float = LIGHTWEIGHT_MATCH_THRESHOLD,
     backend_preference: str = "auto",
 ) -> MatchResult:
     if backend_preference in ("auto", "facenet"):
-        deepface_result = _verify_with_deepface(reference_image, live_image)
+        deepface_result = _verify_with_stored_embedding(reference_embedding, live_image)
+        if deepface_result is None:
+            deepface_result = _verify_with_deepface(reference_image, live_image)
         if deepface_result is not None:
             return deepface_result
         if backend_preference == "facenet":
@@ -52,6 +63,61 @@ def verify_faces(
                 "or close other apps and try FaceNet again."
             )
     return _verify_with_opencv(reference_image, live_image, lightweight_threshold)
+
+
+def _generate_deepface_embedding(image_path: Path) -> list[float] | None:
+    try:
+        from deepface import DeepFace
+    except Exception:
+        return None
+
+    try:
+        representations = DeepFace.represent(
+            img_path=str(image_path),
+            model_name="Facenet",
+            detector_backend="opencv",
+            enforce_detection=True,
+            align=True,
+        )
+    except Exception:
+        return None
+
+    if not representations:
+        return None
+    embedding = representations[0].get("embedding")
+    if not embedding:
+        return None
+    return [float(value) for value in embedding]
+
+
+def _verify_with_stored_embedding(
+    reference_embedding: str | None,
+    live_image: Path,
+) -> MatchResult | None:
+    if not reference_embedding:
+        return None
+
+    try:
+        reference_vector = np.array(json.loads(reference_embedding), dtype=np.float32)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    live_embedding = _generate_deepface_embedding(live_image)
+    if live_embedding is None:
+        return None
+
+    live_vector = np.array(live_embedding, dtype=np.float32)
+    distance = _cosine_distance(reference_vector, live_vector)
+    is_match = distance <= FACE_MATCH_THRESHOLD
+    return MatchResult(
+        is_match=is_match,
+        score=distance,
+        backend="Stored FaceNet embedding",
+        message=(
+            "Compared the live face with the stored student embedding. "
+            "Lower score means the faces are more similar."
+        ),
+    )
 
 
 def _verify_with_deepface(reference_image: Path, live_image: Path) -> MatchResult | None:
@@ -137,3 +203,11 @@ def _histogram_embedding(face_image: np.ndarray) -> np.ndarray:
     histogram = cv2.calcHist([hsv], [0, 1], None, [48, 48], [0, 180, 0, 256])
     cv2.normalize(histogram, histogram, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
     return histogram
+
+
+def _cosine_distance(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
+    denominator = np.linalg.norm(vector_a) * np.linalg.norm(vector_b)
+    if denominator == 0:
+        return 1.0
+    similarity = float(np.dot(vector_a, vector_b) / denominator)
+    return 1 - similarity
