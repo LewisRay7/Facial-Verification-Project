@@ -54,6 +54,7 @@ def _ensure_log_columns(connection: sqlite3.Connection) -> None:
     migrations = {
         "expected_result": "ALTER TABLE verification_logs ADD COLUMN expected_result TEXT",
         "duration_ms": "ALTER TABLE verification_logs ADD COLUMN duration_ms REAL",
+        "match_threshold": "ALTER TABLE verification_logs ADD COLUMN match_threshold REAL",
     }
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
@@ -156,15 +157,16 @@ def add_verification_log(
     captured_image_path: Path | None,
     expected_result: str | None = None,
     duration_ms: float | None = None,
+    match_threshold: float | None = None,
 ) -> int:
     with closing(get_connection()) as connection:
         cursor = connection.execute(
             """
             INSERT INTO verification_logs (
                 student_id, result, score, backend, captured_image_path,
-                expected_result, duration_ms, verified_at
+                expected_result, duration_ms, match_threshold, verified_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student_id,
@@ -174,6 +176,7 @@ def add_verification_log(
                 str(captured_image_path) if captured_image_path else None,
                 expected_result,
                 duration_ms,
+                match_threshold,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -195,6 +198,7 @@ def list_logs(limit: int = 100) -> list[dict[str, Any]]:
                 verification_logs.captured_image_path,
                 verification_logs.expected_result,
                 verification_logs.duration_ms,
+                verification_logs.match_threshold,
                 verification_logs.verified_at
             FROM verification_logs
             JOIN students ON students.id = verification_logs.student_id
@@ -237,7 +241,7 @@ def evaluation_summary() -> dict[str, float | int]:
     with closing(get_connection()) as connection:
         rows = connection.execute(
             """
-            SELECT result, score, expected_result, duration_ms
+            SELECT result, score, expected_result, duration_ms, backend, match_threshold
             FROM verification_logs
             WHERE result IN ('VERIFIED', 'NOT VERIFIED')
             """
@@ -271,6 +275,29 @@ def evaluation_summary() -> dict[str, float | int]:
     ]
     average_duration_ms = sum(durations) / len(durations) if durations else 0.0
     accuracy = (correct / len(evaluated_rows) * 100) if evaluated_rows else 0.0
+    opencv_match_scores = [
+        float(row["score"])
+        for row in evaluated_rows
+        if row["backend"] == "OpenCV lightweight fallback"
+        and row["expected_result"] == "MATCH"
+        and row["score"] is not None
+    ]
+    opencv_no_match_scores = [
+        float(row["score"])
+        for row in evaluated_rows
+        if row["backend"] == "OpenCV lightweight fallback"
+        and row["expected_result"] == "NO_MATCH"
+        and row["score"] is not None
+    ]
+    suggested_opencv_threshold = 0.0
+    if opencv_match_scores and opencv_no_match_scores:
+        suggested_opencv_threshold = (
+            min(opencv_match_scores) + max(opencv_no_match_scores)
+        ) / 2
+    elif opencv_match_scores:
+        suggested_opencv_threshold = min(opencv_match_scores)
+    elif opencv_no_match_scores:
+        suggested_opencv_threshold = max(opencv_no_match_scores) + 0.01
 
     return {
         "total_tests": total_tests,
@@ -283,4 +310,5 @@ def evaluation_summary() -> dict[str, float | int]:
         "false_accepts": false_accepts,
         "false_rejects": false_rejects,
         "average_duration_ms": average_duration_ms,
+        "suggested_opencv_threshold": suggested_opencv_threshold,
     }

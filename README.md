@@ -8,6 +8,8 @@ Local prototype for a FaceNet-based automated exam verification system. It lets 
 - captures a live face using the webcam
 - verifies the live face against the registered photo
 - records verification result, score, backend, and time
+- records expected outcome, threshold, and response time for evaluation tests
+- calculates accuracy, false accepts, false rejects, and average response time
 - stores data locally in SQLite
 
 ## Hardware-Friendly Design
@@ -71,6 +73,15 @@ Streamlit will open the app in your browser.
 6. Capture the student's face using the webcam.
 7. Show the Verified / Not Verified result.
 8. Open Verification Logs to show the recorded attempt.
+9. Open System Evaluation to show accuracy, false accepts, false rejects, and response time.
+
+During testing, set the expected outcome in the Verify Student tab:
+
+- choose "Same student should verify" when the captured person is the selected student
+- choose "Different person should not verify" when testing with another person
+- choose "Do not include in accuracy calculation" for practice attempts
+
+The OpenCV fallback threshold can be tuned during testing. Lower it if the same student is rejected too often. Raise it if different people are accepted.
 
 ## Notes For The Final Report
 

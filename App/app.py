@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from SRC.config import CAPTURE_DIR, PHOTO_DIR, ensure_directories
+from SRC.config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD
 from SRC.database import (
     add_student,
     add_verification_log,
@@ -29,7 +30,6 @@ from SRC.face_matcher import (
     save_uploaded_image,
     verify_faces,
 )
-from SRC.config import LIGHTWEIGHT_MATCH_THRESHOLD
 
 
 st.set_page_config(
@@ -60,6 +60,10 @@ def prepare_log_frame(logs: list[dict]) -> pd.DataFrame:
     if "duration_ms" in frame.columns:
         frame["response_time_s"] = frame["duration_ms"].apply(
             lambda value: "" if pd.isna(value) else f"{float(value) / 1000:.2f}"
+        )
+    if "match_threshold" in frame.columns:
+        frame["threshold"] = frame["match_threshold"].apply(
+            lambda value: "" if pd.isna(value) else f"{float(value):.2f}"
         )
     return frame
 
@@ -103,6 +107,7 @@ def dashboard_page() -> None:
                     "full_name",
                     "result",
                     "score",
+                    "threshold",
                     "response_time_s",
                     "backend",
                 ]
@@ -222,18 +227,24 @@ def verify_student_page() -> None:
     try:
         save_camera_image(camera_image, capture_path)
         start_time = perf_counter()
+        backend_preference = {
+            "Auto": "auto",
+            "FaceNet only": "facenet",
+            "OpenCV fallback": "opencv",
+        }[backend_choice]
         result = verify_faces(
             Path(selected_student["photo_path"]),
             capture_path,
             lightweight_threshold=lightweight_threshold,
-            backend_preference={
-                "Auto": "auto",
-                "FaceNet only": "facenet",
-                "OpenCV fallback": "opencv",
-            }[backend_choice],
+            backend_preference=backend_preference,
         )
         duration_ms = (perf_counter() - start_time) * 1000
         status = "VERIFIED" if result.is_match else "NOT VERIFIED"
+        match_threshold = (
+            FACE_MATCH_THRESHOLD
+            if "FaceNet" in result.backend
+            else lightweight_threshold
+        )
         expected_result = {
             "Same student should verify": "MATCH",
             "Different person should not verify": "NO_MATCH",
@@ -247,6 +258,7 @@ def verify_student_page() -> None:
             captured_image_path=capture_path,
             expected_result=expected_result,
             duration_ms=duration_ms,
+            match_threshold=match_threshold,
         )
 
         if result.is_match:
@@ -258,6 +270,7 @@ def verify_student_page() -> None:
         score_col, time_col = st.columns(2)
         score_col.metric(metric_label, f"{result.score:.4f}")
         time_col.metric("Response time", f"{duration_ms / 1000:.2f}s")
+        st.caption(f"Threshold used: {match_threshold:.2f}")
         st.caption(f"Backend: {result.backend}. {result.message}")
     except FaceMatchError as exc:
         add_verification_log(
@@ -294,6 +307,7 @@ def logs_page() -> None:
                 "full_name",
                 "result",
                 "score",
+                "threshold",
                 "expected_outcome",
                 "accuracy_result",
                 "response_time_s",
@@ -356,6 +370,25 @@ def evaluation_page() -> None:
         f"{summary['average_duration_ms'] / 1000:.2f}s",
     )
 
+    if summary["evaluated_tests"]:
+        if summary["false_rejects"]:
+            st.warning(
+                "False rejects mean the system rejected a person who was expected to match. "
+                "For OpenCV fallback tests, try lowering the fallback threshold and retesting "
+                "with stronger lighting and a front-facing camera angle."
+            )
+        if summary["false_accepts"]:
+            st.warning(
+                "False accepts mean the system accepted a person who was expected not to match. "
+                "For OpenCV fallback tests, raise the fallback threshold and retest."
+            )
+    if summary["suggested_opencv_threshold"]:
+        st.info(
+            "Suggested OpenCV threshold from evaluated fallback tests: "
+            f"{summary['suggested_opencv_threshold']:.2f}. "
+            "Treat this as a starting point, then retest."
+        )
+
     st.write("Evaluation notes")
     st.text_area(
         "Notes for report",
@@ -410,6 +443,10 @@ def evaluation_page() -> None:
                 "metric": "Average response time",
                 "value": f"{summary['average_duration_ms'] / 1000:.2f}s",
             },
+            {
+                "metric": "Suggested OpenCV threshold",
+                "value": f"{summary['suggested_opencv_threshold']:.2f}",
+            },
         ]
     )
 
@@ -432,6 +469,7 @@ def evaluation_page() -> None:
                     "full_name",
                     "result",
                     "score",
+                    "threshold",
                     "expected_outcome",
                     "accuracy_result",
                     "response_time_s",
