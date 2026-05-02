@@ -48,13 +48,22 @@ def verify_faces(
     reference_image: Path,
     live_image: Path,
     reference_embedding: str | None = None,
+    facenet_threshold: float = FACE_MATCH_THRESHOLD,
     lightweight_threshold: float = LIGHTWEIGHT_MATCH_THRESHOLD,
     backend_preference: str = "auto",
 ) -> MatchResult:
     if backend_preference in ("auto", "facenet"):
-        deepface_result = _verify_with_stored_embedding(reference_embedding, live_image)
+        deepface_result = _verify_with_stored_embedding(
+            reference_embedding,
+            live_image,
+            facenet_threshold,
+        )
         if deepface_result is None:
-            deepface_result = _verify_with_deepface(reference_image, live_image)
+            deepface_result = _verify_with_deepface(
+                reference_image,
+                live_image,
+                facenet_threshold,
+            )
         if deepface_result is not None:
             return deepface_result
         if backend_preference == "facenet":
@@ -95,6 +104,7 @@ def _generate_deepface_embedding(image_path: Path) -> list[float] | None:
 def _verify_with_stored_embedding(
     reference_embedding: str | None,
     live_image: Path,
+    facenet_threshold: float,
 ) -> MatchResult | None:
     if not reference_embedding:
         return None
@@ -110,7 +120,7 @@ def _verify_with_stored_embedding(
 
     live_vector = np.array(live_embedding, dtype=np.float32)
     distance = _cosine_distance(reference_vector, live_vector)
-    is_match = distance <= FACE_MATCH_THRESHOLD
+    is_match = distance <= facenet_threshold
     return MatchResult(
         is_match=is_match,
         score=distance,
@@ -122,7 +132,11 @@ def _verify_with_stored_embedding(
     )
 
 
-def _verify_with_deepface(reference_image: Path, live_image: Path) -> MatchResult | None:
+def _verify_with_deepface(
+    reference_image: Path,
+    live_image: Path,
+    facenet_threshold: float,
+) -> MatchResult | None:
     try:
         from deepface import DeepFace
     except Exception:
@@ -147,7 +161,7 @@ def _verify_with_deepface(reference_image: Path, live_image: Path) -> MatchResul
         return None
 
     distance = float(result.get("distance", 1.0))
-    is_match = distance <= FACE_MATCH_THRESHOLD
+    is_match = distance <= facenet_threshold
     return MatchResult(
         is_match=is_match,
         score=distance,

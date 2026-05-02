@@ -15,6 +15,7 @@ from SRC.config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD
 from SRC.database import (
     add_student,
     add_verification_log,
+    clear_verification_logs,
     dashboard_summary,
     evaluation_summary,
     get_student_by_number,
@@ -226,6 +227,14 @@ def verify_student_page() -> None:
             step=0.01,
             help="Lower this if the same person is being rejected. Higher this if different people are being accepted.",
         )
+        facenet_threshold = st.slider(
+            "FaceNet distance threshold",
+            min_value=0.10,
+            max_value=0.80,
+            value=float(FACE_MATCH_THRESHOLD),
+            step=0.01,
+            help="Higher accepts more same-student captures but can increase false accepts.",
+        )
         st.info(
             "If the backend says OpenCV fallback, matching is only for prototype testing. "
             "Install the optional FaceNet backend for better real face verification."
@@ -267,13 +276,14 @@ def verify_student_page() -> None:
             Path(selected_student["photo_path"]),
             capture_path,
             reference_embedding=selected_student["face_embedding"],
+            facenet_threshold=facenet_threshold,
             lightweight_threshold=lightweight_threshold,
             backend_preference=backend_preference,
         )
         duration_ms = (perf_counter() - start_time) * 1000
         status = "VERIFIED" if result.is_match else "NOT VERIFIED"
         match_threshold = (
-            FACE_MATCH_THRESHOLD
+            facenet_threshold
             if "FaceNet" in result.backend
             else lightweight_threshold
         )
@@ -510,6 +520,37 @@ def evaluation_page() -> None:
     st.subheader("System Evaluation")
     summary = evaluation_summary()
 
+    with st.expander("Demo and testing guide", expanded=True):
+        st.write(
+            "Before the official test, run one practice verification to warm up FaceNet. "
+            "The first attempt can take longer while the model loads; later attempts should "
+            "be much faster."
+        )
+        st.markdown(
+            """
+            - Clear old verification logs before the final evaluation.
+            - Use Auto or FaceNet only when the FaceNet backend is available.
+            - Test the same number of same-student and different-person attempts.
+            - Mark every real test with the correct expected outcome.
+            - Aim for at least 10 same-student attempts and 10 different-person attempts.
+            """
+        )
+
+    with st.expander("Start a fresh evaluation"):
+        st.write(
+            "Clear old verification attempts before a new test run. Student records and "
+            "registered photos will stay saved."
+        )
+        confirm_clear = st.checkbox("I want to clear all verification logs")
+        if st.button(
+            "Clear verification logs",
+            disabled=not confirm_clear,
+            type="secondary",
+        ):
+            deleted_count = clear_verification_logs()
+            st.success(f"Cleared {deleted_count} verification log(s).")
+            st.rerun()
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Test cases", summary["total_tests"])
     col2.metric("Verified results", summary["verified"])
@@ -643,31 +684,14 @@ def evaluation_page() -> None:
 st.title("Automated Exam Verification System")
 st.caption("Face-based student identity verification for exam entry.")
 
-dashboard_tab, register_tab, verify_tab, students_tab, evaluation_tab, logs_tab = st.tabs(
-    [
-        "Dashboard",
-        "Register Student",
-        "Verify Student",
-        "Students",
-        "System Evaluation",
-        "Verification Logs",
-    ]
-)
+pages = {
+    "Dashboard": dashboard_page,
+    "Register Student": register_student_page,
+    "Verify Student": verify_student_page,
+    "Students": students_page,
+    "System Evaluation": evaluation_page,
+    "Verification Logs": logs_page,
+}
 
-with dashboard_tab:
-    dashboard_page()
-
-with register_tab:
-    register_student_page()
-
-with verify_tab:
-    verify_student_page()
-
-with students_tab:
-    students_page()
-
-with evaluation_tab:
-    evaluation_page()
-
-with logs_tab:
-    logs_page()
+selected_page = st.sidebar.radio("Navigation", list(pages.keys()))
+pages[selected_page]()

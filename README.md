@@ -85,6 +85,26 @@ Streamlit will open the app in your browser.
 8. Open Verification Logs to show the recorded attempt and captured image.
 9. Open System Evaluation to show accuracy, false accepts, false rejects, and response time.
 
+The app uses sidebar navigation so the webcam capture component is only loaded on the Verify Student page. Moving to another page releases the camera in the browser.
+
+## Final Testing Checklist
+
+Before recording final results, run one practice verification to warm up FaceNet. The first attempt can take longer because the pretrained model is loaded into memory. After that, clear the verification logs from the System Evaluation tab so the warm-up attempt is not counted.
+
+Use this checklist for the final evaluation:
+
+1. Register or confirm all student records have clear front-facing photos.
+2. Use Auto or FaceNet only when the FaceNet backend is available.
+3. Keep lighting, camera distance, and face angle as consistent as possible.
+4. Clear old verification logs from the System Evaluation tab.
+5. Record at least 10 same-student attempts.
+6. Record at least 10 different-person attempts.
+7. Select the correct expected outcome before each test.
+8. Export the verification logs and evaluation summary.
+9. Take screenshots of the final System Evaluation and Verification Logs tabs.
+
+For the demo, avoid changing thresholds during the final run. If tuning is needed, tune first, clear the logs again, and then repeat the final evaluation from the beginning.
+
 Student records can be managed from the Students tab. Use it to correct names, update program/class details, replace photos, or deactivate students who should no longer appear in verification. Deactivation keeps old logs for reporting.
 
 During testing, set the expected outcome in the Verify Student tab:
@@ -93,7 +113,18 @@ During testing, set the expected outcome in the Verify Student tab:
 - choose "Different person should not verify" when testing with another person
 - choose "Do not include in accuracy calculation" for practice attempts
 
-The OpenCV fallback threshold can be tuned during testing. Lower it if the same student is rejected too often. Raise it if different people are accepted.
+To start a fresh evaluation, open the System Evaluation tab, expand "Start a fresh evaluation", tick the confirmation box, and clear the verification logs. This keeps the registered students and photos, but removes old test attempts from the accuracy calculation.
+
+Recommended evaluation settings:
+
+- use Auto or FaceNet only when the FaceNet backend is installed
+- start with the FaceNet distance threshold at 0.45
+- use OpenCV fallback only for prototype demonstrations when FaceNet is unavailable
+- start with the OpenCV fallback threshold at 0.05
+
+Thresholds can be tuned during testing. For FaceNet, raise the distance threshold if the same student is rejected too often, and lower it if different people are accepted. For OpenCV fallback, lower the similarity threshold if the same student is rejected too often, and raise it if different people are accepted.
+
+For a 90% accuracy target, run a balanced test set. For example, record at least 10 same-student attempts and 10 different-person attempts, then check the System Evaluation tab for accuracy, false accepts, and false rejects.
 
 ## Notes For The Final Report
 

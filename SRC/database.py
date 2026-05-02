@@ -300,6 +300,13 @@ def list_logs(limit: int = 100) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def clear_verification_logs() -> int:
+    with closing(get_connection()) as connection:
+        deleted = connection.execute("DELETE FROM verification_logs").rowcount
+        connection.commit()
+        return int(deleted)
+
+
 def dashboard_summary() -> dict[str, int]:
     with closing(get_connection()) as connection:
         total_students = connection.execute(
