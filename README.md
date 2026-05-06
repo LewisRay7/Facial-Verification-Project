@@ -96,10 +96,16 @@ This project also includes a lightweight Tkinter desktop version that reuses the
 The easiest folder launch option is:
 
 ```text
-START_EXAM_VERIFICATION.bat
+OPEN_EXAM_VERIFICATION.vbs
 ```
 
-It opens the packaged EXE when `dist\ExamVerificationSystem\ExamVerificationSystem.exe` exists. If the EXE has not been built yet, it falls back to the Python desktop app.
+It opens the packaged EXE when `dist\ExamVerificationSystem\ExamVerificationSystem.exe` exists. If the EXE has not been built yet, it falls back to the Python desktop app without leaving a command window open.
+
+The command-window launcher is also available for troubleshooting:
+
+```text
+START_EXAM_VERIFICATION.bat
+```
 
 Run the desktop app with:
 
