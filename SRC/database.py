@@ -57,6 +57,8 @@ def _ensure_student_columns(connection: sqlite3.Connection) -> None:
         "updated_at": "ALTER TABLE students ADD COLUMN updated_at TEXT",
         "face_embedding": "ALTER TABLE students ADD COLUMN face_embedding TEXT",
         "embedding_backend": "ALTER TABLE students ADD COLUMN embedding_backend TEXT",
+        "exam_eligible": "ALTER TABLE students ADD COLUMN exam_eligible INTEGER NOT NULL DEFAULT 1",
+        "eligibility_note": "ALTER TABLE students ADD COLUMN eligibility_note TEXT",
     }
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
@@ -85,15 +87,18 @@ def add_student(
     photo_path: Path,
     face_embedding: str | None = None,
     embedding_backend: str | None = None,
+    exam_eligible: bool = True,
+    eligibility_note: str = "",
 ) -> int:
     with closing(get_connection()) as connection:
         cursor = connection.execute(
             """
             INSERT INTO students (
                 student_number, full_name, program, photo_path,
-                face_embedding, embedding_backend, created_at
+                face_embedding, embedding_backend, exam_eligible,
+                eligibility_note, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student_number.strip(),
@@ -102,6 +107,8 @@ def add_student(
                 str(photo_path),
                 face_embedding,
                 embedding_backend,
+                1 if exam_eligible else 0,
+                eligibility_note.strip(),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -138,18 +145,28 @@ def update_student_details(
     student_number: str,
     full_name: str,
     program: str,
+    exam_eligible: bool,
+    eligibility_note: str,
 ) -> None:
     with closing(get_connection()) as connection:
         connection.execute(
             """
             UPDATE students
-            SET student_number = ?, full_name = ?, program = ?, updated_at = ?
+            SET
+                student_number = ?,
+                full_name = ?,
+                program = ?,
+                exam_eligible = ?,
+                eligibility_note = ?,
+                updated_at = ?
             WHERE id = ?
             """,
             (
                 student_number.strip(),
                 full_name.strip(),
                 program.strip(),
+                1 if exam_eligible else 0,
+                eligibility_note.strip(),
                 datetime.now().isoformat(timespec="seconds"),
                 student_id,
             ),
@@ -182,7 +199,8 @@ def list_students(active_only: bool = True) -> list[sqlite3.Row]:
                 f"""
                 SELECT
                     id, student_number, full_name, program, photo_path, created_at,
-                    active, face_embedding, embedding_backend
+                    active, face_embedding, embedding_backend,
+                    exam_eligible, eligibility_note
                 FROM students
                 {active_filter}
                 ORDER BY full_name COLLATE NOCASE
@@ -200,7 +218,8 @@ def search_students(search_text: str = "", active_only: bool = True) -> list[sql
                 f"""
                 SELECT
                     id, student_number, full_name, program, photo_path, created_at,
-                    active, face_embedding, embedding_backend
+                    active, face_embedding, embedding_backend,
+                    exam_eligible, eligibility_note
                 FROM students
                 WHERE (student_number LIKE ? OR full_name LIKE ? OR program LIKE ?)
                 {active_filter}
@@ -217,7 +236,8 @@ def get_student(student_id: int) -> sqlite3.Row | None:
             """
             SELECT
                 id, student_number, full_name, program, photo_path, created_at,
-                active, face_embedding, embedding_backend
+                active, face_embedding, embedding_backend,
+                exam_eligible, eligibility_note
             FROM students
             WHERE id = ?
             """,
@@ -231,7 +251,8 @@ def get_student_by_number(student_number: str) -> sqlite3.Row | None:
             """
             SELECT
                 id, student_number, full_name, program, photo_path, created_at,
-                active, face_embedding, embedding_backend
+                active, face_embedding, embedding_backend,
+                exam_eligible, eligibility_note
             FROM students
             WHERE student_number = ?
             """,

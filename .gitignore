@@ -9,3 +9,9 @@ Data/captures/
 .streamlit/
 .env
 *.log
+
+# Generated desktop build output
+build/
+dist/
+*.spec
+python311.exe

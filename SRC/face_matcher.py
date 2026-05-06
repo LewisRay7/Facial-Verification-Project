@@ -17,6 +17,19 @@ class MatchResult:
     message: str
 
 
+@dataclass
+class IdentificationResult:
+    student_id: int | None
+    is_match: bool
+    status: str
+    score: float
+    second_best_score: float | None
+    suggested_threshold: float
+    ranked_matches: list[tuple[int, float]]
+    backend: str
+    message: str
+
+
 class FaceMatchError(RuntimeError):
     pass
 
@@ -73,6 +86,118 @@ def verify_faces(
                 "OpenCV for the demo."
             )
     return _verify_with_opencv(reference_image, live_image, lightweight_threshold)
+
+
+def identify_face_from_embeddings(
+    live_image: Path,
+    candidates: list[dict],
+    facenet_threshold: float = 0.60,
+    min_distance_gap: float = 0.08,
+    low_confidence_margin: float = 0.12,
+) -> IdentificationResult:
+    usable_candidates = [
+        candidate for candidate in candidates if candidate.get("face_embedding")
+    ]
+    if not usable_candidates:
+        raise FaceMatchError(
+            "No active students have stored FaceNet embeddings yet. Generate embeddings "
+            "from the Students page after installing the optional FaceNet backend."
+        )
+
+    live_embedding = _generate_deepface_embedding(live_image)
+    if live_embedding is None:
+        raise FaceMatchError(
+            "FaceNet could not create an embedding from the live camera image. Capture "
+            "a clearer front-facing image with better lighting."
+        )
+
+    live_vector = _l2_normalize(np.array(live_embedding, dtype=np.float32))
+    ranked_matches: list[tuple[float, int]] = []
+
+    for candidate in usable_candidates:
+        try:
+            reference_vector = _l2_normalize(
+                np.array(
+                    json.loads(candidate["face_embedding"]),
+                    dtype=np.float32,
+                )
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+        distance = _euclidean_distance(reference_vector, live_vector)
+        ranked_matches.append((distance, int(candidate["id"])))
+
+    if not ranked_matches:
+        raise FaceMatchError(
+            "No valid stored FaceNet embeddings were found. Refresh student embeddings "
+            "from the Students page."
+        )
+
+    ranked_matches.sort(key=lambda match: match[0])
+    best_distance, best_student_id = ranked_matches[0]
+    second_best_distance = ranked_matches[1][0] if len(ranked_matches) > 1 else None
+    ranked_result = [
+        (student_id, distance) for distance, student_id in ranked_matches[:5]
+    ]
+    suggested_threshold = _suggest_identification_threshold(
+        best_distance,
+        second_best_distance,
+        facenet_threshold,
+    )
+
+    has_clear_gap = (
+        second_best_distance is None
+        or second_best_distance - best_distance >= min_distance_gap
+    )
+
+    if best_distance <= facenet_threshold and has_clear_gap:
+        return IdentificationResult(
+            student_id=best_student_id,
+            is_match=True,
+            status="VERIFIED",
+            score=best_distance,
+            second_best_score=second_best_distance,
+            suggested_threshold=suggested_threshold,
+            ranked_matches=ranked_result,
+            backend="Stored FaceNet embedding search",
+            message=(
+                "Compared L2-normalized live and stored FaceNet embeddings. Lower distance "
+                "means the faces are more similar."
+            ),
+        )
+
+    low_confidence_limit = facenet_threshold + low_confidence_margin
+    if best_distance <= low_confidence_limit and has_clear_gap:
+        return IdentificationResult(
+            student_id=best_student_id,
+            is_match=False,
+            status="LOW_CONFIDENCE",
+            score=best_distance,
+            second_best_score=second_best_distance,
+            suggested_threshold=suggested_threshold,
+            ranked_matches=ranked_result,
+            backend="Stored FaceNet embedding search",
+            message=(
+                "The closest face is slightly above the threshold. Review the live image, "
+                "lighting, and stored student photo before allowing exam entry."
+            ),
+        )
+
+    return IdentificationResult(
+        student_id=None,
+        is_match=False,
+        status="UNKNOWN",
+        score=best_distance,
+        second_best_score=second_best_distance,
+        suggested_threshold=suggested_threshold,
+        ranked_matches=ranked_result,
+        backend="Stored FaceNet embedding search",
+        message=(
+            "Unknown student. The closest face was too far from the threshold or too "
+            "close to another registered student."
+        ),
+    )
 
 
 def _generate_deepface_embedding(image_path: Path) -> list[float] | None:
@@ -232,3 +357,26 @@ def _cosine_distance(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
         return 1.0
     similarity = float(np.dot(vector_a, vector_b) / denominator)
     return 1 - similarity
+
+
+def _l2_normalize(vector: np.ndarray) -> np.ndarray:
+    norm = np.linalg.norm(vector)
+    if norm == 0:
+        return vector
+    return vector / norm
+
+
+def _euclidean_distance(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
+    return float(np.linalg.norm(vector_a - vector_b))
+
+
+def _suggest_identification_threshold(
+    best_distance: float,
+    second_best_distance: float | None,
+    current_threshold: float,
+) -> float:
+    if second_best_distance is None:
+        return round(max(current_threshold, best_distance + 0.03), 2)
+    midpoint = (best_distance + second_best_distance) / 2
+    suggested = min(max(best_distance + 0.03, current_threshold), midpoint)
+    return round(float(suggested), 2)

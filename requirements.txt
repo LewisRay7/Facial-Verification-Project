@@ -3,3 +3,10 @@ opencv-python==4.9.0.80
 numpy==1.26.4
 Pillow==10.3.0
 pandas==2.2.2
+
+# Optional FaceNet backend for stored embeddings and automatic identification
+deepface==0.0.91
+tf-keras==2.16.0
+
+# Desktop EXE packaging
+pyinstaller==6.11.1
