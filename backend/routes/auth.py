@@ -53,6 +53,12 @@ def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> dic
     email_sent = send_otp_email(user.email, code)
     log_event(db, actor_username=user.username, action="OTP_ISSUED", target=user.email, metadata={"sent": email_sent})
     db.commit()
+    if not email_sent and settings.is_production:
+        return {
+            "ok": False,
+            "message": "Verification email could not be sent. Check institutional mail settings.",
+            "email_sent": False,
+        }
     response = {"ok": True, "message": "Verification code sent.", "email_sent": email_sent}
     if not email_sent and not settings.is_production:
         response["developer_code"] = code

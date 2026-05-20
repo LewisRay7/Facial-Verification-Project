@@ -9,24 +9,27 @@ from backend.config import settings
 
 
 def send_otp_email(recipient: str, code: str) -> bool:
-    if settings.resend_api_key and settings.resend_from:
-        return _send_resend_email(recipient, code)
-    if not settings.smtp_host or not settings.smtp_user or not settings.smtp_password:
+    try:
+        if settings.resend_api_key and settings.resend_from:
+            return _send_resend_email(recipient, code)
+        if not settings.smtp_host or not settings.smtp_user or not settings.smtp_password:
+            return False
+
+        message = EmailMessage()
+        message["Subject"] = "ExamVerify verification code"
+        message["From"] = settings.smtp_from
+        message["To"] = recipient
+        message.set_content(
+            f"Your ExamVerify verification code is {code}.\n\nThis code expires shortly."
+        )
+
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as server:
+            server.starttls()
+            server.login(settings.smtp_user, settings.smtp_password)
+            server.send_message(message)
+        return True
+    except Exception:
         return False
-
-    message = EmailMessage()
-    message["Subject"] = "ExamVerify verification code"
-    message["From"] = settings.smtp_from
-    message["To"] = recipient
-    message.set_content(
-        f"Your ExamVerify verification code is {code}.\n\nThis code expires shortly."
-    )
-
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as server:
-        server.starttls()
-        server.login(settings.smtp_user, settings.smtp_password)
-        server.send_message(message)
-    return True
 
 
 def _send_resend_email(recipient: str, code: str) -> bool:
