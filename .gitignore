@@ -5,13 +5,28 @@ __pycache__/
 Data/exam_verification.db
 Data/student_photos/
 Data/captures/
+Models/.deepface/
 
 .streamlit/
 .env
 *.log
 
-# Generated desktop build output
+# Generated build output
 build/
 dist/
 *.spec
 python311.exe
+Flutter/**/build/
+.dart_tool/
+Flutter/**/.dart_tool/
+Flutter/**/.flutter-plugins*
+Flutter/**/.packages
+*.apk
+*.aab
+
+# Docker / local cloud backend runtime
+backend/*.db
+backend/*.sqlite
+backend/.env
+backend/.venv/
+examverify_cloud.db

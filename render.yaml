@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: examverify-cloud-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    envVars:
+      - key: EXAMVERIFY_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SUPER_ADMIN_USERNAME
+        value: admin
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
