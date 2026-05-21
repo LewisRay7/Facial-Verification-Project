@@ -66,6 +66,7 @@ def _send_resend_email(recipient: str, code: str) -> bool:
         headers={
             "Authorization": f"Bearer {settings.resend_api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "ExamVerify/1.0",
         },
         method="POST",
     )
