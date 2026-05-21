@@ -3,6 +3,7 @@ from __future__ import annotations
 import smtplib
 import json
 import logging
+import urllib.error
 import urllib.request
 from email.message import EmailMessage
 
@@ -33,6 +34,10 @@ def send_otp_email(recipient: str, code: str) -> bool:
             server.login(settings.smtp_user, settings.smtp_password)
             server.send_message(message)
         return True
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        logger.warning("OTP email delivery failed via %s: HTTP %s %s", _active_provider(), exc.code, body)
+        return False
     except Exception as exc:
         logger.warning("OTP email delivery failed via %s: %s", _active_provider(), exc)
         return False
