@@ -74,7 +74,15 @@ def current_user(
         )
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized") from exc
-    user = db.query(User).filter(User.username == payload.get("sub"), User.active.is_(True)).first()
+    user = (
+        db.query(User)
+        .filter(
+            User.username == payload.get("sub"),
+            User.active.is_(True),
+            User.account_status == "approved",
+        )
+        .first()
+    )
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return user

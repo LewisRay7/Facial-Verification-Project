@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from backend.config import settings
@@ -28,6 +28,7 @@ def init_db() -> None:
     from backend.models.tables import User
 
     ModelsBase.metadata.create_all(bind=engine)
+    _ensure_access_request_columns()
     with SessionLocal() as db:
         existing = db.query(User).filter(User.username == settings.super_admin_username).first()
         if existing is None:
@@ -37,8 +38,34 @@ def init_db() -> None:
                     full_name="System Administrator",
                     email=settings.super_admin_email,
                     role="Super Admin",
+                    account_status="approved",
                     password_hash=hash_password(settings.super_admin_password),
                     active=True,
                 )
             )
             db.commit()
+
+
+def _ensure_access_request_columns() -> None:
+    inspector = inspect(engine)
+    user_columns = {column["name"] for column in inspector.get_columns("users")}
+    request_columns = {
+        column["name"] for column in inspector.get_columns("admin_requests")
+    }
+    statements: list[str] = []
+    if "account_status" not in user_columns:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN account_status VARCHAR(30) NOT NULL DEFAULT 'approved'"
+        )
+    if "phone_number" not in request_columns:
+        statements.append(
+            "ALTER TABLE admin_requests ADD COLUMN phone_number VARCHAR(40) NOT NULL DEFAULT ''"
+        )
+    if "department" not in request_columns:
+        statements.append(
+            "ALTER TABLE admin_requests ADD COLUMN department VARCHAR(160) NOT NULL DEFAULT ''"
+        )
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))

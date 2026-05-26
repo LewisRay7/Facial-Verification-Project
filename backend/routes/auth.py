@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.auth.security import (
@@ -17,7 +18,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.logs.audit import log_event
 from backend.models.schemas import LoginRequest, OtpVerifyRequest, TokenResponse
-from backend.models.tables import User
+from backend.models.tables import AdminRequest, User
 from backend.otp.email import send_otp_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -26,12 +27,46 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/login")
 def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> dict:
     username = payload.username.strip().lower()
-    user = db.query(User).filter(User.username == username, User.active.is_(True)).first()
+    user = (
+        db.query(User)
+        .filter(or_(User.username == username, User.email == username))
+        .first()
+    )
     now = datetime.utcnow()
     if user is None:
+        request = (
+            db.query(AdminRequest)
+            .filter(or_(AdminRequest.username == username, AdminRequest.email == username))
+            .order_by(AdminRequest.created_at.desc())
+            .first()
+        )
+        if request is not None and request.status == "pending":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your access request is still under review.",
+            )
+        if request is not None and request.status == "rejected":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your access request was not approved. Contact the system administrator.",
+            )
         log_event(db, actor_username=username, action="LOGIN_FAILED", metadata={"reason": "unknown_user"})
         db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if not user.active or user.account_status == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is disabled. Contact the system administrator.",
+        )
+    if user.account_status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your access request is still under review.",
+        )
+    if payload.requested_role == "Admin" and user.role not in {"Super Admin", "Admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is not approved for Admin access.")
+    if payload.requested_role == "Invigilator" and user.role != "Invigilator":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is not approved for Invigilator access.")
     if user.locked_until and user.locked_until > now:
         log_event(db, actor_username=username, action="LOGIN_LOCKED")
         db.commit()
@@ -68,7 +103,15 @@ def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> dic
 @router.post("/verify-otp", response_model=TokenResponse)
 def verify_otp(payload: OtpVerifyRequest, db: Annotated[Session, Depends(get_db)]) -> TokenResponse:
     username = payload.username.strip().lower()
-    user = db.query(User).filter(User.username == username, User.active.is_(True)).first()
+    user = (
+        db.query(User)
+        .filter(
+            or_(User.username == username, User.email == username),
+            User.active.is_(True),
+            User.account_status == "approved",
+        )
+        .first()
+    )
     now = datetime.utcnow()
     if (
         user is None

@@ -12,6 +12,7 @@ Role = Literal["Super Admin", "Admin", "Invigilator"]
 class LoginRequest(BaseModel):
     username: str = Field(min_length=2, max_length=80)
     password: str = Field(min_length=6, max_length=200)
+    requested_role: Literal["Admin", "Invigilator"] | None = None
 
 
 class OtpVerifyRequest(BaseModel):
@@ -31,7 +32,9 @@ class AdminAccessRequestCreate(BaseModel):
     full_name: str = Field(min_length=3, max_length=160)
     email: EmailStr
     username: str = Field(min_length=3, max_length=80)
-    requested_role: Role = "Invigilator"
+    phone_number: str = Field(default="", max_length=40)
+    department: str = Field(default="", max_length=160)
+    requested_role: Literal["Admin", "Invigilator"] = "Invigilator"
     note: str = ""
 
 

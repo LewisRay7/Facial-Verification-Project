@@ -32,6 +32,11 @@ Create a new Render Blueprint from the repository. The `render.yaml` file
 deploys this backend using Docker. Set Super Admin and OTP delivery environment
 variables in Render before opening the app to users.
 
+For permanent shared student records and verification logs, set `DATABASE_URL`
+to a hosted PostgreSQL connection string in Render. Do not rely on the default
+SQLite file in a Render web-service container for production data retention,
+because container files can be replaced during restarts or deployments.
+
 Render Free blocks outbound SMTP ports, so use an HTTPS email provider for
 production OTP delivery:
 

@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.auth.security import require_roles
@@ -45,6 +45,27 @@ def sync_student(
     db.commit()
     db.refresh(row)
     return {"ok": True, "student": _student_to_dict(row)}
+
+
+@router.delete("/{student_number_hash}")
+def delete_student(
+    student_number_hash: str,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    row = db.query(Student).filter(Student.student_number_hash == student_number_hash).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+    row.active = False
+    row.updated_at = datetime.utcnow()
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="STUDENT_DELETED",
+        target=row.student_number_mask,
+    )
+    db.commit()
+    return {"ok": True, "message": "Student record deleted"}
 
 
 def _student_to_dict(row: Student) -> dict:

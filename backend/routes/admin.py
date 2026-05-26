@@ -17,13 +17,27 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.post("/access-requests", response_model=ApiMessage)
 def create_access_request(payload: AdminAccessRequestCreate, db: Annotated[Session, Depends(get_db)]) -> ApiMessage:
-    exists = db.query(User).filter((User.username == payload.username.lower()) | (User.email == payload.email)).first()
+    username = payload.username.strip().lower()
+    email = str(payload.email).lower()
+    exists = db.query(User).filter((User.username == username) | (User.email == email)).first()
     if exists:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already exists")
+    pending = (
+        db.query(AdminRequest)
+        .filter(
+            (AdminRequest.username == username) | (AdminRequest.email == email),
+            AdminRequest.status == "pending",
+        )
+        .first()
+    )
+    if pending:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An access request is already pending")
     request = AdminRequest(
         full_name=payload.full_name.strip(),
-        email=str(payload.email).lower(),
-        username=payload.username.strip().lower(),
+        email=email,
+        username=username,
+        phone_number=payload.phone_number.strip(),
+        department=payload.department.strip(),
         requested_role=payload.requested_role,
         note=payload.note,
     )
@@ -65,6 +79,7 @@ def decide_access_request(
                 full_name=request.full_name,
                 email=request.email,
                 role=request.requested_role,
+                account_status="approved",
                 password_hash=hash_password(temporary_password),
                 active=True,
             )
@@ -85,6 +100,8 @@ def _request_to_dict(row: AdminRequest) -> dict:
         "full_name": row.full_name,
         "email": row.email,
         "username": row.username,
+        "phone_number": row.phone_number,
+        "department": row.department,
         "requested_role": row.requested_role,
         "status": row.status,
         "note": row.note,
