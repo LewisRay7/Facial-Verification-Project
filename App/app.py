@@ -1,6 +1,9 @@
 from datetime import datetime
+import base64
+from html import escape
 from pathlib import Path
 import sys
+from textwrap import dedent
 from time import sleep
 from time import perf_counter
 
@@ -17,18 +20,30 @@ from SRC.config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD
 from SRC.database import (
     add_student,
     add_verification_log,
+    audit_log_integrity,
+    authenticate_user,
     clear_verification_logs,
     dashboard_summary,
     evaluation_summary,
     get_student_by_number,
     init_db,
     list_logs,
+    list_audit_events,
     list_students,
+    log_audit_event,
+    mask_student_identifier,
     search_students,
     set_student_active,
+    store_pending_email_otp,
+    two_factor_setup_hint,
+    verify_email_otp,
+    verify_password_for_email_otp,
     update_student_details,
     update_student_photo,
 )
+from SRC.authentication import generate_email_otp, send_email_otp
+from SRC.face_verification import run_static_liveness_check
+from SRC.liveness import LivenessPipeline
 from SRC.face_matcher import (
     FaceMatchError,
     generate_face_embedding,
@@ -41,204 +56,425 @@ from SRC.face_matcher import (
 
 st.set_page_config(
     page_title="Exam Verification System",
+    page_icon=str(ROOT_DIR / "Assets" / "examverify_logo_512.png"),
     layout="wide",
 )
 
 ensure_directories()
 init_db()
 
+SESSION_TIMEOUT_SECONDS = 10 * 60
+ROLE_PAGES = {
+    "Super Admin": {
+        "Dashboard",
+        "Register Student",
+        "Verify Student",
+        "Auto Identify",
+        "Face Unlock Scanner",
+        "Students",
+        "System Evaluation",
+        "Verification Logs",
+    },
+    "Admin": {
+        "Dashboard",
+        "Register Student",
+        "Verify Student",
+        "Auto Identify",
+        "Face Unlock Scanner",
+        "Students",
+        "System Evaluation",
+        "Verification Logs",
+    },
+    "Invigilator": {
+        "Dashboard",
+        "Verify Student",
+        "Auto Identify",
+        "Face Unlock Scanner",
+        "Verification Logs",
+    },
+    "Viewer": {"Dashboard", "System Evaluation", "Verification Logs"},
+}
+
+
+def load_css(relative_path: str) -> None:
+    css_path = Path(__file__).resolve().parent / relative_path
+    try:
+        css = css_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        st.warning(f"UI stylesheet not found: {css_path}")
+        return
+    render_html(f"<style>\n{css}\n</style>")
+
+
+def render_html(markup: str) -> None:
+    html = dedent(markup).strip()
+    html = "\n".join(line.strip() for line in html.splitlines())
+    st.markdown(html, unsafe_allow_html=True)
+
 
 def apply_app_style() -> None:
-    st.markdown(
+    load_css("styles/main.css")
+
+
+def page_header(title: str, subtitle: str, accent: str = "#22d3ee") -> None:
+    render_html(
+        f"""
+        <div class="evs-hero" style="border-left: 4px solid {accent}; border-left-color: {accent};">
+            <div class="evs-kicker" style="color:{accent};">Biometric Verification System</div>
+            <div class="evs-hero-title">{escape(title)}</div>
+            <div class="evs-hero-subtitle">{escape(subtitle)}</div>
+            <div class="evs-hero-meta">
+                <span class="evs-chip">Live identity verification</span>
+                <span class="evs-chip">FaceNet ready</span>
+                <span class="evs-chip">Local secure prototype</span>
+            </div>
+        </div>
         """
-        <style>
-            .stApp {
-                background: #0b1120;
-                color: #f8fafc;
-            }
+    )
 
-            [data-testid="stSidebar"] {
-                background: #111827;
-                border-right: 1px solid #334155;
-            }
 
-            [data-testid="stSidebar"] * {
-                color: #f8fafc !important;
-            }
-
-            [data-testid="stSidebar"] label,
-            [data-testid="stSidebar"] p,
-            [data-testid="stSidebar"] span {
-                font-weight: 650;
-            }
-
-            h1, h2, h3 {
-                color: #f8fafc;
-                letter-spacing: 0;
-            }
-
-            p, li, label, span, div {
-                color: #e5e7eb;
-            }
-
-            div[data-testid="stMetric"] {
-                background: #111827;
-                border: 1px solid #334155;
-                border-radius: 8px;
-                padding: 16px 18px;
-                box-shadow: 0 14px 30px rgba(0, 0, 0, 0.20);
-            }
-
-            div[data-testid="stMetric"] label,
-            div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-                color: #f8fafc !important;
-            }
-
-            div[data-testid="stDataFrame"] {
-                border: 1px solid #334155;
-                border-radius: 8px;
-                overflow: hidden;
-            }
-
-            .evs-hero {
-                background: linear-gradient(135deg, #111827 0%, #172554 100%);
-                border: 1px solid #2563eb;
-                border-radius: 8px;
-                padding: 20px 22px;
-                margin-bottom: 18px;
-                box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
-            }
-
-            .evs-hero-title {
-                font-size: 1.7rem;
-                font-weight: 700;
-                margin-bottom: 4px;
-                color: #ffffff;
-            }
-
-            .evs-hero-subtitle {
-                color: #cbd5e1;
-                font-size: 0.98rem;
-            }
-
-            .evs-status {
-                border-radius: 999px;
-                display: inline-block;
-                font-size: 0.9rem;
-                font-weight: 800;
-                letter-spacing: 0;
-                padding: 8px 13px;
-                text-transform: uppercase;
-            }
-
-            .evs-status-ok {
-                background: #22c55e;
-                color: #052e16;
-                box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.55), 0 0 18px rgba(34, 197, 94, 0.35);
-            }
-
-            .evs-status-blocked {
-                background: #f97316;
-                color: #431407;
-                box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.55), 0 0 18px rgba(249, 115, 22, 0.35);
-            }
-
-            .evs-status-unknown {
-                background: #22d3ee;
-                color: #083344;
-                box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.55), 0 0 18px rgba(34, 211, 238, 0.35);
-            }
-
-            .evs-status-low {
-                background: #facc15;
-                color: #422006;
-                box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.55), 0 0 18px rgba(250, 204, 21, 0.35);
-            }
-
-            .evs-panel {
-                background: #111827;
-                border: 1px solid #334155;
-                border-radius: 8px;
-                padding: 16px;
-                margin-bottom: 16px;
-                box-shadow: 0 14px 30px rgba(0, 0, 0, 0.20);
-            }
-
-            .stButton > button,
-            .stDownloadButton > button,
-            button[kind="primary"] {
-                background: #06b6d4 !important;
-                border: 1px solid #67e8f9 !important;
-                border-radius: 8px !important;
-                color: #082f49 !important;
-                font-weight: 800 !important;
-            }
-
-            .stButton > button:hover,
-            .stDownloadButton > button:hover {
-                background: #22d3ee !important;
-                border-color: #a5f3fc !important;
-                color: #082f49 !important;
-            }
-
-            img {
-                border: 1px solid #475569;
-                border-radius: 8px;
-                box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
-            }
-
-            [data-testid="stAlert"] {
-                border-radius: 8px;
-                font-weight: 700;
-            }
-
-            input, textarea, select {
-                color: #f8fafc !important;
-            }
-
-            .evs-result-card {
-                background: #111827;
-                border: 1px solid #38bdf8;
-                border-radius: 8px;
-                padding: 18px;
-                margin-top: 14px;
-                box-shadow: 0 18px 42px rgba(8, 47, 73, 0.35);
-            }
-
-            .evs-result-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 12px;
-            }
-
-            .evs-result-label {
-                color: #94a3b8;
-                font-size: 0.78rem;
-                font-weight: 800;
-                text-transform: uppercase;
-            }
-
-            .evs-result-value {
-                color: #ffffff;
-                font-size: 1rem;
-                font-weight: 800;
-                margin-top: 2px;
-            }
-        </style>
-        """,
+def render_sidebar_brand() -> None:
+    logo_path = ROOT_DIR / "Assets" / "examverify_logo_512.png"
+    logo_src = ""
+    if logo_path.exists():
+        encoded_logo = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        logo_src = f"data:image/png;base64,{encoded_logo}"
+    st.sidebar.markdown(
+        dedent(
+            f"""
+        <div class="evs-sidebar-brand">
+            <div class="evs-brand-logo-row">
+                <div class="evs-brand-mark">
+                    <img src="{logo_src}" alt="ExamVerify logo" />
+                </div>
+                <div>
+                    <div class="evs-brand-title">ExamVerify</div>
+                    <div class="evs-brand-version">Exam Authentication System</div>
+                </div>
+            </div>
+            <div class="evs-brand-divider"></div>
+            <div class="evs-brand-tags">
+                <span class="evs-brand-tag">v2.0</span>
+                <span class="evs-brand-tag evs-brand-tag-live">LIVE</span>
+            </div>
+        </div>
+        """
+        ).strip(),
         unsafe_allow_html=True,
     )
 
 
-def page_header(title: str, subtitle: str) -> None:
-    st.markdown(
-        f"""
-        <div class="evs-hero">
-            <div class="evs-hero-title">{title}</div>
-            <div class="evs-hero-subtitle">{subtitle}</div>
+def render_sidebar_footer() -> None:
+    from datetime import datetime as _dt
+    _now = _dt.now().strftime("%H:%M")
+    st.sidebar.markdown(
+        dedent(
+            f"""
+        <div class="evs-sidebar-status">
+            <div class="evs-sidebar-status-row">
+                <span class="evs-status-label">System state</span>
+                <span class="evs-status-value"><span class="evs-dot evs-dot-pulse"></span>&nbsp;Online</span>
+            </div>
+            <div class="evs-sidebar-status-row">
+                <span class="evs-status-label">Engine</span>
+                <span class="evs-status-value">FaceNet</span>
+            </div>
+            <div class="evs-sidebar-status-row">
+                <span class="evs-status-label">Session</span>
+                <span class="evs-status-value">{_now}</span>
+            </div>
         </div>
-        """,
+        <div class="evs-sidebar-footer">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            &nbsp;Local Streamlit Console - DeepFace + OpenCV
+        </div>
+        """
+        ).strip(),
         unsafe_allow_html=True,
+    )
+
+
+def current_user() -> dict | None:
+    return st.session_state.get("auth_user")
+
+
+def user_role() -> str:
+    user = current_user() or {}
+    return str(user.get("role") or "Viewer")
+
+
+def is_admin() -> bool:
+    return user_role() in {"Super Admin", "Admin"}
+
+
+def authorized_pages() -> list[str]:
+    role = user_role()
+    allowed = ROLE_PAGES.get(role, ROLE_PAGES["Viewer"])
+    return [page for page in NAV_ITEMS if page in allowed]
+
+
+def session_is_expired() -> bool:
+    last_activity = st.session_state.get("last_activity")
+    if not last_activity:
+        return False
+    return (datetime.now() - last_activity).total_seconds() > SESSION_TIMEOUT_SECONDS
+
+
+def sign_out(message: str | None = None) -> None:
+    st.session_state.pop("auth_user", None)
+    st.session_state.pop("last_activity", None)
+    if message:
+        st.session_state["auth_message"] = message
+    st.rerun()
+
+
+def require_admin() -> None:
+    if not is_admin():
+        st.error("This action requires an administrator account.")
+        st.stop()
+
+
+def render_login_page() -> None:
+    page_header(
+        "Secure Exam Console",
+        "Sign in to access biometric registration, verification, and audit records.",
+        accent="#22d3ee",
+    )
+    st.info("Demo accounts: admin / Admin@12345, invigilator / Verify@12345, viewer / View@12345")
+    message = st.session_state.pop("auth_message", None)
+    if message:
+        st.warning(message)
+    pending_username = st.session_state.get("pending_otp_username")
+    if pending_username:
+        st.success("Password accepted. Enter the email OTP to complete login.")
+        with st.form("examverify_email_otp"):
+            otp_code = st.text_input("Email OTP", max_chars=6)
+            verify_submitted = st.form_submit_button("Verify OTP", type="primary")
+        if st.session_state.get("pending_otp_demo_code"):
+            st.caption(f"Local demo OTP: {st.session_state['pending_otp_demo_code']}")
+        if st.button("Cancel login"):
+            st.session_state.pop("pending_otp_username", None)
+            st.session_state.pop("pending_otp_demo_code", None)
+            st.rerun()
+        if not verify_submitted:
+            st.stop()
+        user = verify_email_otp(pending_username, otp_code)
+        if user is None:
+            st.error("Invalid or expired email OTP.")
+            st.stop()
+        st.session_state.pop("pending_otp_username", None)
+        st.session_state.pop("pending_otp_demo_code", None)
+        st.session_state["auth_user"] = user
+        st.session_state["last_activity"] = datetime.now()
+        st.rerun()
+
+    with st.form("examverify_login"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Send email OTP", type="primary")
+    if not submitted:
+        st.stop()
+    user = verify_password_for_email_otp(username, password)
+    if user is None:
+        st.error("Invalid username/password, inactive account, or locked account.")
+        st.stop()
+    code = generate_email_otp()
+    store_pending_email_otp(user["username"], code)
+    try:
+        email_result = send_email_otp(user.get("email", ""), code)
+        if email_result.sent:
+            st.success(email_result.message)
+            st.session_state.pop("pending_otp_demo_code", None)
+        else:
+            st.warning(email_result.message)
+            st.session_state["pending_otp_demo_code"] = code
+    except Exception as exc:
+        st.warning(
+            "Could not send email OTP through SMTP. Using local demo OTP display."
+        )
+        st.caption(str(exc))
+        st.session_state["pending_otp_demo_code"] = code
+    st.session_state["pending_otp_username"] = user["username"]
+    st.rerun()
+
+
+def run_liveness_capture(student_number: str, seconds: int = 25) -> tuple[bool, Path | None, str]:
+    status_slot = st.empty()
+    frame_slot = st.empty()
+    pipeline = LivenessPipeline(timeout_seconds=float(seconds))
+    capture_path: Path | None = None
+    camera = cv2.VideoCapture(0)
+    if not camera.isOpened():
+        pipeline.close()
+        return False, None, "Could not open webcam for liveness challenge."
+    try:
+        started = perf_counter()
+        while perf_counter() - started < seconds:
+            ok, frame = camera.read()
+            if not ok:
+                return False, None, "Could not read a webcam frame."
+            frame = cv2.resize(frame, (640, 480))
+            result = pipeline.process(frame)
+            status_slot.info(
+                f"{result.message} | Blinks: {result.blink_count}/2 | Challenge: {result.challenge}"
+            )
+            cv2.putText(
+                frame,
+                result.message[:58],
+                (18, 34),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (34, 211, 238),
+                2,
+            )
+            frame_slot.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
+            if result.passed and pipeline.state.best_frame is not None:
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                capture_path = CAPTURE_DIR / f"live_liveness_{safe_file_part(student_number)}_{timestamp}.jpg"
+                cv2.imwrite(str(capture_path), pipeline.state.best_frame)
+                log_audit_event("LIVENESS_PASSED", actor=user_role(), details=result.message)
+                return True, capture_path, result.message
+            sleep(0.08)
+    finally:
+        camera.release()
+        pipeline.close()
+    log_audit_event("SPOOF_DETECTED", actor=user_role(), details="Liveness challenge timed out or failed")
+    return False, capture_path, "Liveness challenge failed or timed out."
+
+
+def enforce_login() -> None:
+    if current_user() and session_is_expired():
+        sign_out("Your session expired. Please sign in again.")
+    if not current_user():
+        render_login_page()
+    st.session_state["last_activity"] = datetime.now()
+
+
+def render_user_panel() -> None:
+    user = current_user()
+    if not user:
+        return
+    st.sidebar.markdown(
+        dedent(
+            f"""
+            <div class="evs-user-panel">
+                <div class="evs-user-name">{escape(str(user["full_name"]))}</div>
+                <div class="evs-user-meta">{escape(str(user["role"]))} access</div>
+            </div>
+            """
+        ).strip(),
+        unsafe_allow_html=True,
+    )
+    if st.sidebar.button("Sign out", use_container_width=True):
+        sign_out()
+
+
+def admin_threshold_controls(
+    default_facenet: float,
+    default_lightweight: float | None = None,
+    default_gap: float | None = None,
+) -> tuple[float, float | None]:
+    if is_admin():
+        facenet_threshold = st.slider(
+            "FaceNet distance threshold" if default_lightweight is not None else "Maximum L2 face distance",
+            min_value=0.10,
+            max_value=1.40 if default_lightweight is None else 0.80,
+            value=float(default_facenet),
+            step=0.01,
+            help="Admin-controlled threshold for verification sensitivity.",
+        )
+        secondary = None
+        if default_lightweight is not None:
+            secondary = st.slider(
+                "OpenCV fallback match threshold",
+                min_value=-1.00,
+                max_value=0.95,
+                value=float(default_lightweight),
+                step=0.01,
+                help="Admin-controlled fallback threshold.",
+            )
+        elif default_gap is not None:
+            secondary = st.slider(
+                "Minimum gap from next closest student",
+                min_value=0.00,
+                max_value=0.30,
+                value=float(default_gap),
+                step=0.01,
+                help="Admin-controlled ambiguity guard.",
+            )
+        return facenet_threshold, secondary
+
+    st.caption("Threshold controls are locked to administrator accounts.")
+    if default_lightweight is not None:
+        return float(default_facenet), float(default_lightweight)
+    return float(default_facenet), default_gap
+
+
+def section_header(title: str, subtitle: str = "") -> None:
+    subtitle_html = (
+        f'<div class="evs-section-subtitle">{escape(subtitle)}</div>'
+        if subtitle
+        else ""
+    )
+    render_html(
+        f"""
+        <div class="evs-section-heading">
+            <div>
+                <div class="evs-section-title">{escape(title)}</div>
+                {subtitle_html}
+            </div>
+        </div>
+        """
+    )
+
+
+def mini_card(label: str, value: str) -> None:
+    render_html(
+        f"""
+        <div class="evs-mini-card">
+            <div class="evs-mini-label">{escape(label)}</div>
+            <div class="evs-mini-value">{escape(value)}</div>
+        </div>
+        """
+    )
+
+
+def dashboard_metric_card(label: str, value: str | int | float, tone: str) -> None:
+    render_html(
+        f"""
+        <div class="evs-metric-card {escape(tone)}">
+            <div class="evs-metric-label">{escape(label)}</div>
+            <div class="evs-metric-value">{escape(str(value))}</div>
+        </div>
+        """
+    )
+
+
+def dashboard_widgets(widgets: list[dict[str, str]]) -> None:
+    cards = []
+    for widget in widgets:
+        cards.append(
+            f"""
+            <div class="evs-widget-card">
+                <div class="evs-widget-top">
+                    <div>
+                        <div class="evs-widget-title">{escape(widget["title"])}</div>
+                        <div class="evs-widget-value">{escape(widget["value"])}</div>
+                    </div>
+                    <div class="evs-icon-pill">{escape(widget["icon"])}</div>
+                </div>
+                <div class="evs-widget-text">{escape(widget["text"])}</div>
+            </div>
+            """
+        )
+    render_html(
+        f'<div class="evs-widget-grid">{"".join(cards)}</div>',
+    )
+
+
+def camera_note(text: str) -> None:
+    render_html(
+        f'<div class="evs-camera-note">{escape(text)}</div>',
     )
 
 
@@ -254,6 +490,29 @@ def unknown_badge() -> str:
 
 def low_confidence_badge() -> str:
     return '<span class="evs-status evs-status-low">Low confidence match</span>'
+
+
+def status_tone(value: str) -> str:
+    status = value.upper()
+    if status == "VERIFIED":
+        return "verified"
+    if status in {"ERROR", "UNKNOWN"} or "UNKNOWN" in status:
+        return "error"
+    return "not-verified"
+
+
+def result_card_tone(value: str) -> str:
+    tone = status_tone(value)
+    if tone == "verified":
+        return "is-verified"
+    if "LOW" in value.upper():
+        return "is-warning"
+    return "is-denied"
+
+
+def status_pill(value: str) -> str:
+    tone = status_tone(value)
+    return f'<span class="evs-log-status {tone}">{escape(value)}</span>'
 
 
 def safe_file_part(value: str) -> str:
@@ -292,13 +551,15 @@ def render_result_card(
     suggested_threshold: float,
     second_best_score: float | None,
 ) -> None:
-    name = student["full_name"] if student else "Unknown"
-    student_number = student["student_number"] if student else "Not identified"
+    name = escape(str(student["full_name"])) if student else "Unknown"
+    student_number = escape(str(student["student_number"])) if student else "Not identified"
     confidence = max(0.0, min(100.0, (1 - (distance / max(threshold, 0.01))) * 100))
     second_best = f"{second_best_score:.4f}" if second_best_score is not None else "N/A"
-    st.markdown(
+    status_html = status_pill(status)
+    tone_class = result_card_tone(status)
+    render_html(
         f"""
-        <div class="evs-result-card">
+        <div class="evs-result-card {tone_class}">
             <div class="evs-result-grid">
                 <div>
                     <div class="evs-result-label">Name</div>
@@ -310,7 +571,7 @@ def render_result_card(
                 </div>
                 <div>
                     <div class="evs-result-label">Status</div>
-                    <div class="evs-result-value">{status}</div>
+                    <div class="evs-result-value">{status_html}</div>
                 </div>
                 <div>
                     <div class="evs-result-label">Confidence</div>
@@ -338,8 +599,7 @@ def render_result_card(
                 </div>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -372,6 +632,14 @@ def face_box_is_stable(
 
 def prepare_log_frame(logs: list[dict]) -> pd.DataFrame:
     frame = pd.DataFrame(logs)
+    if "student_number" in frame.columns:
+        frame["student_number_masked"] = frame["student_number"].apply(
+            lambda value: mask_student_identifier(str(value))
+        )
+    if "student_number_hash" in frame.columns:
+        frame["student_id_hash"] = frame["student_number_hash"].apply(
+            lambda value: "" if pd.isna(value) else str(value)[:16]
+        )
     if "expected_result" in frame.columns:
         expected_labels = {
             "MATCH": "Same student",
@@ -406,6 +674,43 @@ def log_accuracy_result(row: pd.Series) -> str:
     return "Not evaluated"
 
 
+def render_log_cards(logs: list[dict], limit: int | None = None) -> None:
+    visible_logs = logs[:limit] if limit else logs
+    cards = []
+    for log in visible_logs:
+        result = str(log.get("result") or "UNKNOWN")
+        tone = status_tone(result)
+        masked_number = escape(mask_student_identifier(str(log.get("student_number") or "")))
+        hash_text = escape(str(log.get("student_number_hash") or "")[:16])
+        full_name = escape(str(log.get("full_name") or "Unknown student"))
+        verified_at = escape(str(log.get("verified_at") or "Pending")[:16])
+        backend = escape(str(log.get("backend") or "Backend unavailable"))
+        score = log.get("score")
+        score_text = "Score N/A" if score is None else f"Score {float(score):.4f}"
+        threshold = log.get("match_threshold")
+        threshold_text = "" if threshold is None else f"Threshold {float(threshold):.2f}"
+        meta = " / ".join(item for item in [backend, threshold_text] if item)
+        cards.append(
+            f"""
+            <div class="evs-log-card {tone}">
+                <div>
+                    <div class="evs-log-time">{verified_at}</div>
+                    <div class="evs-log-meta">{meta}</div>
+                </div>
+                <div>
+                    <div class="evs-log-name">{full_name}</div>
+                    <div class="evs-log-id">#{masked_number} / hash {hash_text}</div>
+                </div>
+                {status_pill(result)}
+                <div class="evs-log-score">{escape(score_text)}</div>
+            </div>
+            """
+        )
+    render_html(
+        f'<div class="evs-log-card-list">{"".join(cards)}</div>',
+    )
+
+
 def create_embedding_for_photo(photo_path: Path) -> tuple[str | None, str | None]:
     embedding_result = generate_face_embedding(photo_path)
     if embedding_result is None:
@@ -417,48 +722,64 @@ def dashboard_page() -> None:
     page_header(
         "Operations Dashboard",
         "Monitor registrations, verification attempts, and recent exam-entry results.",
+        accent="#22d3ee",
     )
     summary = dashboard_summary()
 
+    section_header("Command Metrics", "Current platform activity and verification outcomes.")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Registered students", summary["total_students"])
-    col2.metric("Verification attempts", summary["total_attempts"])
-    col3.metric("Verified", summary["verified_attempts"])
-    col4.metric("Not verified", summary["failed_attempts"])
+    with col1:
+        dashboard_metric_card("Registered students", summary["total_students"], "students")
+    with col2:
+        dashboard_metric_card("Verification attempts", summary["total_attempts"], "attempts")
+    with col3:
+        dashboard_metric_card("Verified", summary["verified_attempts"], "verified")
+    with col4:
+        dashboard_metric_card("Not verified", summary["failed_attempts"], "failed")
+
+    dashboard_widgets(
+        [
+            {
+                "icon": "SEC",
+                "title": "Identity Engine",
+                "value": "FaceNet",
+                "text": "Deep embedding search with OpenCV fallback for prototype resilience.",
+            },
+            {
+                "icon": "OK",
+                "title": "Access Control",
+                "value": f"{summary['verified_attempts']} approvals",
+                "text": "Exam-entry decisions are logged with backend, score, threshold, and time.",
+            },
+            {
+                "icon": "LOG",
+                "title": "Audit Mode",
+                "value": f"{summary['total_attempts']} records",
+                "text": "Verification activity is exportable for lecturer review and evaluation.",
+            },
+        ]
+    )
 
     if summary["error_attempts"]:
         st.warning(f"{summary['error_attempts']} verification attempt(s) ended with an error.")
 
-    recent_logs = list_logs(limit=5)
+    recent_logs = list_logs(limit=8)
+    section_header("Recent Verification Attempts", "Latest exam-entry decisions recorded by the system.")
     if recent_logs:
-        frame = prepare_log_frame(recent_logs)
-        st.caption("Recent verification attempts")
-        st.dataframe(
-            frame[
-                [
-                    "verified_at",
-                    "student_number",
-                    "full_name",
-                    "result",
-                    "score",
-                    "threshold",
-                    "response_time_s",
-                    "backend",
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        render_log_cards(recent_logs, limit=8)
     else:
         st.info("No verification attempts have been recorded yet.")
 
 
 def register_student_page() -> None:
+    require_admin()
     page_header(
         "Student Registration",
         "Enroll students, store their reference photo, and set exam eligibility.",
+        accent="#60a5fa",
     )
 
+    section_header("Enrollment Form", "Use a clear front-facing image so FaceNet can generate reliable embeddings.")
     with st.form("student_registration", clear_on_submit=True):
         left, right = st.columns([1, 1])
         with left:
@@ -530,8 +851,10 @@ def verify_student_page() -> None:
     page_header(
         "Exam Verification",
         "Select a student, capture a live face, and approve or reject entry.",
+        accent="#22c55e",
     )
 
+    section_header("Student Lookup", "Search, confirm eligibility, then capture the live face for verification.")
     search_text = st.text_input("Find student", placeholder="Search by student number, name, or program")
     students = search_students(search_text)
     if not students:
@@ -546,36 +869,25 @@ def verify_student_page() -> None:
     selected_student = next(
         row for row in students if int(row["id"]) == options[selected_label]
     )
-    st.markdown(
-        eligibility_badge(bool(selected_student["exam_eligible"])),
-        unsafe_allow_html=True,
-    )
+    render_html(eligibility_badge(bool(selected_student["exam_eligible"])))
     if selected_student["eligibility_note"]:
         st.caption(f"Eligibility note: {selected_student['eligibility_note']}")
 
     with st.expander("Matching settings"):
-        backend_choice = st.radio(
-            "Verification backend",
-            ["Auto", "FaceNet only", "OpenCV fallback"],
-            index=0,
-            horizontal=True,
-            help="Use FaceNet for better matching. Use OpenCV fallback if FaceNet is too slow on this laptop.",
-        )
-        lightweight_threshold = st.slider(
-            "OpenCV fallback match threshold",
-            min_value=-1.00,
-            max_value=0.95,
-            value=float(LIGHTWEIGHT_MATCH_THRESHOLD),
-            step=0.01,
-            help="Lower this if the same person is being rejected. Higher this if different people are being accepted.",
-        )
-        facenet_threshold = st.slider(
-            "FaceNet distance threshold",
-            min_value=0.10,
-            max_value=0.80,
-            value=float(FACE_MATCH_THRESHOLD),
-            step=0.01,
-            help="Higher accepts more same-student captures but can increase false accepts.",
+        if is_admin():
+            backend_choice = st.radio(
+                "Verification backend",
+                ["Auto", "FaceNet only", "OpenCV fallback"],
+                index=0,
+                horizontal=True,
+                help="Use FaceNet for better matching. Use OpenCV fallback if FaceNet is too slow on this laptop.",
+            )
+        else:
+            backend_choice = "Auto"
+            st.caption("Backend selection is locked to Auto for non-admin accounts.")
+        facenet_threshold, lightweight_threshold = admin_threshold_controls(
+            FACE_MATCH_THRESHOLD,
+            LIGHTWEIGHT_MATCH_THRESHOLD,
         )
         st.info(
             "If the backend says OpenCV fallback, matching is only for prototype testing. "
@@ -593,24 +905,70 @@ def verify_student_page() -> None:
 
     left, right = st.columns([1, 1])
     with left:
-        st.caption("Registered photo")
-        st.image(selected_student["photo_path"], width=300)
-        st.write(f"**Student number:** {selected_student['student_number']}")
-        st.write(f"**Name:** {selected_student['full_name']}")
-        st.write(f"**Program:** {selected_student['program'] or 'Not recorded'}")
+        section_header("Registered Identity", "Stored reference details for the selected student.")
+        reference_photo = Path(selected_student["photo_path"])
+        if reference_photo.exists():
+            st.image(str(reference_photo), width=300)
+        else:
+            st.error("The stored reference photo for this student is missing. Update the student photo before verification.")
+            return
+        a, b, c = st.columns(3)
+        a.markdown("**Student number**")
+        a.write(selected_student["student_number"])
+        b.markdown("**Name**")
+        b.write(selected_student["full_name"])
+        c.markdown("**Program**")
+        c.write(selected_student["program"] or "Not recorded")
 
     with right:
-        st.caption("Live camera capture")
-        camera_image = st.camera_input("Capture student's face")
+        section_header("Live Capture", "Take a current webcam image for face comparison.")
+        camera_note("Camera guidance: blink twice, follow the head movement challenge, and keep your face centered.")
+        challenge_key = f"liveness_capture_{selected_student['id']}"
+        if st.button("Run liveness challenge", type="primary"):
+            passed, live_path, live_message = run_liveness_capture(
+                str(selected_student["student_number"])
+            )
+            if passed and live_path:
+                st.session_state[challenge_key] = str(live_path)
+                st.success(live_message)
+            else:
+                st.session_state.pop(challenge_key, None)
+                st.error(live_message)
+        if st.session_state.get(challenge_key):
+            st.image(st.session_state[challenge_key], caption="Liveness-verified capture", width=300)
+        with st.expander("Fallback single image capture"):
+            st.caption("Use this only for controlled testing. Full verification requires the liveness challenge.")
+            camera_image = st.camera_input("Capture student's face")
 
-    if camera_image is None:
+    if not st.session_state.get(challenge_key) and camera_image is None:
         return
 
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     capture_path = CAPTURE_DIR / f"{safe_file_part(selected_student['student_number'])}_{timestamp}.jpg"
 
     try:
-        save_camera_image(camera_image, capture_path)
+        if st.session_state.get(challenge_key):
+            capture_path = Path(st.session_state[challenge_key])
+        else:
+            save_camera_image(camera_image, capture_path)
+            liveness_check = run_static_liveness_check(capture_path)
+            if not liveness_check.allowed_to_match:
+                add_verification_log(
+                    student_id=int(selected_student["id"]),
+                    result="SPOOF DETECTED",
+                    score=None,
+                    backend="MediaPipe Face Mesh",
+                    captured_image_path=capture_path,
+                )
+                log_audit_event(
+                    "SPOOF_DETECTED",
+                    actor=user_role(),
+                    details=liveness_check.liveness.message,
+                )
+                st.error(f"Spoof detected: {liveness_check.liveness.message}")
+                if liveness_check.liveness.spoof_reasons:
+                    st.caption(", ".join(liveness_check.liveness.spoof_reasons))
+                return
         start_time = perf_counter()
         backend_preference = {
             "Auto": "auto",
@@ -618,7 +976,7 @@ def verify_student_page() -> None:
             "OpenCV fallback": "opencv",
         }[backend_choice]
         result = verify_faces(
-            Path(selected_student["photo_path"]),
+            reference_photo,
             capture_path,
             reference_embedding=selected_student["face_embedding"],
             facenet_threshold=facenet_threshold,
@@ -664,6 +1022,7 @@ def verify_student_page() -> None:
         time_col.metric("Response time", f"{duration_ms / 1000:.2f}s")
         st.caption(f"Threshold used: {match_threshold:.2f}")
         st.caption(f"Backend: {result.backend}. {result.message}")
+        st.session_state.pop(challenge_key, None)
     except FaceMatchError as exc:
         add_verification_log(
             student_id=int(selected_student["id"]),
@@ -681,11 +1040,13 @@ def auto_identify_page() -> None:
     page_header(
         "Automatic Student Identification",
         "Capture a live face, find the closest registered student, and check exam eligibility.",
+        accent="#a78bfa",
     )
 
     students = [dict(row) for row in list_students(active_only=True)]
     embedded_students = [row for row in students if row.get("face_embedding")]
 
+    section_header("Recognition Readiness", "FaceNet compares the live capture against stored student embeddings.")
     col1, col2, col3 = st.columns(3)
     col1.metric("Active students", len(students))
     col2.metric("Ready for auto scan", len(embedded_students))
@@ -703,21 +1064,9 @@ def auto_identify_page() -> None:
         return
 
     with st.expander("Identification settings"):
-        facenet_threshold = st.slider(
-            "Maximum L2 face distance",
-            min_value=0.10,
-            max_value=1.40,
-            value=0.60,
-            step=0.01,
-            help="The system returns Unknown when the closest normalized embedding distance is above this value.",
-        )
-        min_distance_gap = st.slider(
-            "Minimum gap from next closest student",
-            min_value=0.00,
-            max_value=0.30,
-            value=0.08,
-            step=0.01,
-            help="Raise this if similar faces are being confused. The best match must beat the second-best match by this amount.",
+        facenet_threshold, min_distance_gap = admin_threshold_controls(
+            0.48,
+            default_gap=0.08,
         )
         st.info(
             "This mode L2-normalizes FaceNet embeddings, calculates distances to all "
@@ -727,11 +1076,12 @@ def auto_identify_page() -> None:
 
     left, right = st.columns([1, 1])
     with left:
-        st.caption("Live camera scan")
+        section_header("Live Camera Scan", "Capture one clear face for automatic identity search.")
+        camera_note("Capture one face only. The engine compares it with all active stored embeddings.")
         camera_image = st.camera_input("Capture face for automatic identification")
 
     with right:
-        st.caption("Identification result")
+        section_header("Identification Result", "The closest matching student appears here after processing.")
         st.info("Scanning face... Capture a clear front-facing image to begin.")
 
     if camera_image is None:
@@ -754,7 +1104,7 @@ def auto_identify_page() -> None:
 
         matched_student = find_student_by_id(embedded_students, result.student_id)
         if result.status == "UNKNOWN":
-            st.markdown(unknown_badge(), unsafe_allow_html=True)
+            render_html(unknown_badge())
             st.error(result.message)
             render_result_card(
                 "Unknown",
@@ -788,13 +1138,10 @@ def auto_identify_page() -> None:
         )
 
         if result.status == "LOW_CONFIDENCE":
-            st.markdown(low_confidence_badge(), unsafe_allow_html=True)
+            render_html(low_confidence_badge())
             st.warning(result.message)
         else:
-            st.markdown(
-                eligibility_badge(bool(matched_student["exam_eligible"])),
-                unsafe_allow_html=True,
-            )
+            render_html(eligibility_badge(bool(matched_student["exam_eligible"])))
 
         if result.status == "VERIFIED" and matched_student["exam_eligible"]:
             st.success("Student identified and approved for exam entry.")
@@ -803,13 +1150,19 @@ def auto_identify_page() -> None:
 
         result_left, result_right = st.columns([1, 1])
         with result_left:
-            st.image(matched_student["photo_path"], caption="Matched student photo", width=280)
+            section_header("Matched Identity", "Stored photo for the best candidate.")
+            matched_photo = Path(matched_student["photo_path"])
+            if matched_photo.exists():
+                st.image(str(matched_photo), caption="Matched student photo", width=280)
+            else:
+                st.warning("The stored photo for this matched student is missing.")
         with result_right:
-            st.write(f"**Student number:** {matched_student['student_number']}")
-            st.write(f"**Name:** {matched_student['full_name']}")
-            st.write(f"**Program:** {matched_student['program'] or 'Not recorded'}")
+            section_header("Candidate Details", "Review the returned student before allowing exam entry.")
+            mini_card("Student number", matched_student["student_number"])
+            mini_card("Name", matched_student["full_name"])
+            mini_card("Program", matched_student["program"] or "Not recorded")
             if matched_student["eligibility_note"]:
-                st.write(f"**Eligibility note:** {matched_student['eligibility_note']}")
+                st.caption(f"Eligibility note: {matched_student['eligibility_note']}")
             render_result_card(
                 result.status.replace("_", " ").title(),
                 matched_student,
@@ -835,11 +1188,13 @@ def face_unlock_scanner_page() -> None:
     page_header(
         "Real-Time Face Unlock Scanner",
         "Continuously scan the webcam, wait for a stable face, then identify the student automatically.",
+        accent="#fb923c",
     )
 
     students = [dict(row) for row in list_students(active_only=True)]
     embedded_students = [row for row in students if row.get("face_embedding")]
 
+    section_header("Scanner Readiness", "The real-time scanner waits for a stable face before running recognition.")
     col1, col2, col3 = st.columns(3)
     col1.metric("Active students", len(students))
     col2.metric("Ready for scanner", len(embedded_students))
@@ -853,52 +1208,46 @@ def face_unlock_scanner_page() -> None:
         return
 
     with st.expander("Scanner settings", expanded=True):
-        threshold = st.slider(
-            "Maximum L2 face distance",
-            min_value=0.10,
-            max_value=1.40,
-            value=0.60,
-            step=0.01,
-        )
-        min_gap = st.slider(
-            "Minimum gap from next closest student",
-            min_value=0.00,
-            max_value=0.30,
-            value=0.08,
-            step=0.01,
-        )
-        stable_seconds = st.slider(
-            "Face stability duration",
-            min_value=0.5,
-            max_value=2.0,
-            value=0.8,
-            step=0.1,
-            help="Recognition starts only after the largest face stays steady for this long.",
-        )
-        cooldown_seconds = st.slider(
-            "Recognition cooldown",
-            min_value=1.0,
-            max_value=5.0,
-            value=2.5,
-            step=0.5,
-            help="After a recognition attempt, wait this long before trying again.",
-        )
-        scan_seconds = st.slider(
-            "Scanner run time",
-            min_value=10,
-            max_value=120,
-            value=45,
-            step=5,
-            help="Streamlit runs this scanner in a controlled session so the app stays responsive.",
-        )
+        threshold, min_gap = admin_threshold_controls(0.48, default_gap=0.08)
+        if is_admin():
+            stable_seconds = st.slider(
+                "Face stability duration",
+                min_value=0.5,
+                max_value=2.0,
+                value=0.8,
+                step=0.1,
+                help="Recognition starts only after the largest face stays steady for this long.",
+            )
+            cooldown_seconds = st.slider(
+                "Recognition cooldown",
+                min_value=1.0,
+                max_value=5.0,
+                value=2.5,
+                step=0.5,
+                help="After a recognition attempt, wait this long before trying again.",
+            )
+            scan_seconds = st.slider(
+                "Scanner run time",
+                min_value=10,
+                max_value=120,
+                value=45,
+                step=5,
+                help="Streamlit runs this scanner in a controlled session so the app stays responsive.",
+            )
+        else:
+            stable_seconds = 0.8
+            cooldown_seconds = 2.5
+            scan_seconds = 45
 
-    start_scanner = st.button("Start automatic scanner", type="primary")
+    auto_scan_enabled = st.toggle("Automatic scanner enabled", value=True)
+    section_header("Live Scanner Feed", "Keep the face centered and steady until recognition starts.")
+    camera_note("The scanner waits for a stable face, then runs identification after the cooldown window.")
     status_slot = st.empty()
     frame_slot = st.empty()
     result_slot = st.empty()
 
-    if not start_scanner:
-        status_slot.info("Scanning face will begin when you start the automatic scanner.")
+    if not auto_scan_enabled:
+        status_slot.info("Automatic scanning is paused.")
         return
 
     camera = cv2.VideoCapture(0)
@@ -910,6 +1259,7 @@ def face_unlock_scanner_page() -> None:
     stable_start = None
     last_recognition_time = 0.0
     scanner_started = perf_counter()
+    liveness_pipeline = LivenessPipeline(timeout_seconds=float(scan_seconds))
 
     status_slot.info("Scanning face...")
     try:
@@ -937,10 +1287,25 @@ def face_unlock_scanner_page() -> None:
                     if stable_duration < stable_seconds:
                         status_slot.info("Hold still...")
                     elif now - last_recognition_time >= cooldown_seconds:
+                        live_result = liveness_pipeline.process(frame)
+                        if not live_result.passed:
+                            status_slot.info(
+                                f"{live_result.message} | Blinks: {live_result.blink_count}/2 | Challenge: {live_result.challenge}"
+                            )
+                            previous_box = face_box
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            frame_slot.image(frame_rgb, channels="RGB", use_container_width=True)
+                            sleep(0.08)
+                            continue
                         status_slot.info("Processing face recognition...")
                         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                         capture_path = CAPTURE_DIR / f"face_unlock_{timestamp}.jpg"
                         cv2.imwrite(str(capture_path), frame)
+                        log_audit_event(
+                            "LIVENESS_PASSED",
+                            actor=user_role(),
+                            details=live_result.message,
+                        )
 
                         start_time = perf_counter()
                         result = identify_face_from_embeddings(
@@ -957,14 +1322,20 @@ def face_unlock_scanner_page() -> None:
                         result_slot.empty()
                         with result_slot.container():
                             if result.status == "VERIFIED" and matched_student:
-                                st.markdown(
-                                    eligibility_badge(bool(matched_student["exam_eligible"])),
-                                    unsafe_allow_html=True,
-                                )
+                                render_html(eligibility_badge(bool(matched_student["exam_eligible"])))
                                 if matched_student["exam_eligible"]:
                                     st.success("Verified. Student identified and eligible.")
                                 else:
                                     st.warning("Verified identity, but student is not eligible.")
+                                info_col, photo_col = st.columns([1, 1])
+                                with info_col:
+                                    mini_card("Full name", matched_student["full_name"])
+                                    mini_card("Student number", matched_student["student_number"])
+                                    mini_card("Program", matched_student["program"] or "Not recorded")
+                                with photo_col:
+                                    stored_photo = Path(matched_student["photo_path"])
+                                    if stored_photo.exists():
+                                        st.image(str(stored_photo), caption="Stored student image", width=240)
                                 render_result_card(
                                     "Verified",
                                     matched_student,
@@ -975,8 +1346,17 @@ def face_unlock_scanner_page() -> None:
                                     result.second_best_score,
                                 )
                             elif result.status == "LOW_CONFIDENCE" and matched_student:
-                                st.markdown(low_confidence_badge(), unsafe_allow_html=True)
+                                render_html(low_confidence_badge())
                                 st.warning("Low confidence match. Manual review recommended.")
+                                info_col, photo_col = st.columns([1, 1])
+                                with info_col:
+                                    mini_card("Full name", matched_student["full_name"])
+                                    mini_card("Student number", matched_student["student_number"])
+                                    mini_card("Program", matched_student["program"] or "Not recorded")
+                                with photo_col:
+                                    stored_photo = Path(matched_student["photo_path"])
+                                    if stored_photo.exists():
+                                        st.image(str(stored_photo), caption="Stored student image", width=240)
                                 render_result_card(
                                     "Low Confidence",
                                     matched_student,
@@ -987,7 +1367,7 @@ def face_unlock_scanner_page() -> None:
                                     result.second_best_score,
                                 )
                             else:
-                                st.markdown(unknown_badge(), unsafe_allow_html=True)
+                                render_html(unknown_badge())
                                 st.error("Unknown student.")
                                 render_result_card(
                                     "Unknown",
@@ -1023,6 +1403,8 @@ def face_unlock_scanner_page() -> None:
                             )
                         last_recognition_time = now
                         stable_start = None
+                        liveness_pipeline.close()
+                        liveness_pipeline = LivenessPipeline(timeout_seconds=float(scan_seconds))
                     else:
                         remaining = cooldown_seconds - (now - last_recognition_time)
                         status_slot.info(f"Cooldown active: {remaining:.1f}s")
@@ -1032,10 +1414,11 @@ def face_unlock_scanner_page() -> None:
                 previous_box = face_box
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_slot.image(frame_rgb, channels="RGB", use_column_width=True)
+            frame_slot.image(frame_rgb, channels="RGB", use_container_width=True)
             sleep(0.08)
     finally:
         camera.release()
+        liveness_pipeline.close()
         status_slot.success("Scanner stopped.")
 
 
@@ -1043,40 +1426,81 @@ def logs_page() -> None:
     page_header(
         "Verification Logs",
         "Review captured attempts, outcomes, thresholds, and exported evidence.",
+        accent="#94a3b8",
     )
     logs = list_logs()
+    integrity = audit_log_integrity()
+    if integrity["tampered"]:
+        st.error(
+            f"Audit integrity needs attention. {integrity['tampered']} log record(s) did not match the stored chain."
+        )
+    elif integrity["unsigned"]:
+        st.info(
+            f"Audit chain active. {integrity['checked']} signed record(s), {integrity['unsigned']} legacy unsigned record(s)."
+        )
+    else:
+        st.success(f"Audit chain verified for {integrity['checked']} record(s).")
     if not logs:
         st.info("No verification attempts have been recorded yet.")
         return
 
     frame = prepare_log_frame(logs)
+
+    # Summary stat chips
+    _total  = len(logs)
+    _ok     = sum(1 for r in logs if r.get("result") == "VERIFIED")
+    _fail   = sum(1 for r in logs if r.get("result") == "NOT VERIFIED")
+    _err    = sum(1 for r in logs if r.get("result") == "ERROR")
+    _err_chip = f'<span class="evs-log-chip evs-log-chip-err">ERR {_err} errors</span>' if _err else ""
+    render_html(
+        f'<div class="evs-log-chips">'
+        f'<span class="evs-log-chip evs-log-chip-total">TOTAL {_total}</span>'
+        f'<span class="evs-log-chip evs-log-chip-ok">VERIFIED {_ok}</span>'
+        f'<span class="evs-log-chip evs-log-chip-fail">DENIED {_fail}</span>'
+        f'{_err_chip}</div>',
+    )
+
+    section_header("Audit Trail", "Exportable evidence for verification attempts and evaluation records.")
+    render_log_cards(logs, limit=12)
+
     st.download_button(
         "Export logs as CSV",
         data=frame.to_csv(index=False).encode("utf-8"),
         file_name=f"verification_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
     )
-    st.dataframe(
-        frame[
-            [
-                "verified_at",
-                "student_number",
-                "full_name",
-                "result",
-                "score",
-                "threshold",
-                "expected_outcome",
-                "accuracy_result",
-                "response_time_s",
-                "backend",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    with st.expander("Detailed export table"):
+        st.dataframe(
+            frame[
+                [
+                    "verified_at",
+                    "student_number_masked",
+                    "student_id_hash",
+                    "full_name",
+                    "result",
+                    "score",
+                    "threshold",
+                    "expected_outcome",
+                    "accuracy_result",
+                    "response_time_s",
+                    "backend",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    audit_events = list_audit_events(limit=100)
+    if audit_events:
+        section_header("Security Audit Events", "Login, liveness, spoof, and administrative security events.")
+        st.dataframe(
+            pd.DataFrame(audit_events),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     preview_options = {
-        f"{row['verified_at']} | {row['student_number']} | {row['result']}": row
+        f"{row['verified_at']} | {mask_student_identifier(str(row['student_number']))} | {row['result']}": row
         for row in logs
         if row.get("captured_image_path")
     }
@@ -1093,7 +1517,7 @@ def logs_page() -> None:
         st.image(
             str(captured_path),
             caption=(
-                f"{selected_log['student_number']} - {selected_log['full_name']} "
+                f"{mask_student_identifier(str(selected_log['student_number']))} - {selected_log['full_name']} "
                 f"({selected_log['result']})"
             ),
             width=300,
@@ -1103,10 +1527,13 @@ def logs_page() -> None:
 
 
 def students_page() -> None:
+    require_admin()
     page_header(
         "Registered Students",
         "Maintain student details, photos, embeddings, status, and exam eligibility.",
+        accent="#2dd4bf",
     )
+    section_header("Student Directory", "Search and manage registered students without leaving the console.")
     show_inactive = st.checkbox("Show inactive students")
     search_text = st.text_input("Search by student number, name, or program")
     students = search_students(search_text, active_only=not show_inactive)
@@ -1119,6 +1546,16 @@ def students_page() -> None:
     frame["status"] = frame["active"].apply(lambda value: "Active" if value else "Inactive")
     frame["eligibility"] = frame["exam_eligible"].apply(
         lambda value: "Eligible" if value else "Not eligible"
+    )
+    active_count = int(frame["active"].sum()) if "active" in frame else 0
+    embedding_count = int(frame["face_embedding"].notna().sum()) if "face_embedding" in frame else 0
+    directory_cols = st.columns(4)
+    directory_cols[0].metric("Visible students", len(frame))
+    directory_cols[1].metric("Active", active_count)
+    directory_cols[2].metric("With embeddings", embedding_count)
+    directory_cols[3].metric("Eligible", int(frame["exam_eligible"].sum()))
+    render_html(
+        '<div class="evs-table-note">Directory records are filtered by the search field and active-status setting above.</div>',
     )
     st.dataframe(
         frame[
@@ -1135,6 +1572,7 @@ def students_page() -> None:
         hide_index=True,
     )
 
+    section_header("Student Management", "Update details, refresh FaceNet embeddings, or change active status.")
     selected_label = st.selectbox(
         "Manage student",
         [f"{row['student_number']} - {row['full_name']}" for row in students],
@@ -1148,6 +1586,7 @@ def students_page() -> None:
 
     left, right = st.columns([1, 1])
     with left:
+        section_header("Stored Identity", "Current photo and embedding state.")
         if current_photo.exists():
             st.image(str(current_photo), caption="Current student photo", width=260)
         else:
@@ -1178,6 +1617,7 @@ def students_page() -> None:
                 )
 
     with right:
+        section_header("Edit Record", "Changes are saved to the local student database.")
         with st.form(f"manage_student_{selected_student['id']}"):
             updated_student_number = st.text_input(
                 "Student number",
@@ -1260,11 +1700,13 @@ def evaluation_page() -> None:
     page_header(
         "System Evaluation",
         "Measure accuracy, false accepts, false rejects, and response time.",
+        accent="#facc15",
     )
     summary = evaluation_summary()
 
+    section_header("Evaluation Controls", "Prepare repeatable test runs for your project demonstration.")
     with st.expander("Demo and testing guide", expanded=True):
-        st.write(
+        st.markdown(
             "Before the official test, run one practice verification to warm up FaceNet. "
             "The first attempt can take longer while the model loads; later attempts should "
             "be much faster."
@@ -1280,20 +1722,24 @@ def evaluation_page() -> None:
         )
 
     with st.expander("Start a fresh evaluation"):
-        st.write(
+        st.markdown(
             "Clear old verification attempts before a new test run. Student records and "
             "registered photos will stay saved."
         )
-        confirm_clear = st.checkbox("I want to clear all verification logs")
-        if st.button(
-            "Clear verification logs",
-            disabled=not confirm_clear,
-            type="secondary",
-        ):
-            deleted_count = clear_verification_logs()
-            st.success(f"Cleared {deleted_count} verification log(s).")
-            st.rerun()
+        if is_admin():
+            confirm_clear = st.checkbox("I want to clear all verification logs")
+            if st.button(
+                "Clear verification logs",
+                disabled=not confirm_clear,
+                type="secondary",
+            ):
+                deleted_count = clear_verification_logs()
+                st.success(f"Cleared {deleted_count} verification log(s).")
+                st.rerun()
+        else:
+            st.info("Only administrator accounts can clear verification logs.")
 
+    section_header("Evaluation Metrics", "Accuracy, decision distribution, and response-time indicators.")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Test cases", summary["total_tests"])
     col2.metric("Verified results", summary["verified"])
@@ -1332,7 +1778,7 @@ def evaluation_page() -> None:
             "Treat this as a starting point, then retest."
         )
 
-    st.write("Evaluation notes")
+    section_header("Report Notes", "Editable text you can use when writing the evaluation section.")
     st.text_area(
         "Notes for report",
         value=(
@@ -1403,12 +1849,13 @@ def evaluation_page() -> None:
     logs = list_logs(limit=200)
     if logs:
         frame = prepare_log_frame(logs)
-        st.caption("Evaluation source records")
+        section_header("Evaluation Source Records", "Underlying log entries used for the summary above.")
         st.dataframe(
             frame[
                 [
                     "verified_at",
-                    "student_number",
+                    "student_number_masked",
+                    "student_id_hash",
                     "full_name",
                     "result",
                     "score",
@@ -1425,19 +1872,33 @@ def evaluation_page() -> None:
 
 
 apply_app_style()
-st.title("Automated Exam Verification System")
-st.caption("Face-based student identity verification for exam entry.")
 
-pages = {
-    "Dashboard": dashboard_page,
-    "Register Student": register_student_page,
-    "Verify Student": verify_student_page,
-    "Auto Identify": auto_identify_page,
-    "Face Unlock Scanner": face_unlock_scanner_page,
-    "Students": students_page,
-    "System Evaluation": evaluation_page,
-    "Verification Logs": logs_page,
+
+NAV_ITEMS = {
+    "Dashboard": {"icon": "\u2302", "page": dashboard_page},
+    "Register Student": {"icon": "+", "page": register_student_page},
+    "Verify Student": {"icon": "\u2713", "page": verify_student_page},
+    "Auto Identify": {"icon": "\u25ce", "page": auto_identify_page},
+    "Face Unlock Scanner": {"icon": "\u25a3", "page": face_unlock_scanner_page},
+    "Students": {"icon": "ID", "page": students_page},
+    "System Evaluation": {"icon": "\u03a3", "page": evaluation_page},
+    "Verification Logs": {"icon": "\u2261", "page": logs_page},
 }
 
-selected_page = st.sidebar.radio("Navigation", list(pages.keys()))
-pages[selected_page]()
+
+def nav_label(page_name: str) -> str:
+    return f"{NAV_ITEMS[page_name]['icon']}  {page_name}"
+
+enforce_login()
+render_sidebar_brand()
+render_user_panel()
+st.sidebar.markdown('<div class="evs-nav-label">NAVIGATION</div>', unsafe_allow_html=True)
+allowed_pages = authorized_pages()
+selected_page = st.sidebar.radio(
+    "Navigation",
+    allowed_pages,
+    format_func=nav_label,
+    label_visibility="collapsed",
+)
+render_sidebar_footer()
+NAV_ITEMS[selected_page]["page"]()

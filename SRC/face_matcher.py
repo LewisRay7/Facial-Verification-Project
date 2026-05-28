@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 
 import cv2
@@ -7,6 +8,10 @@ import numpy as np
 from PIL import Image
 
 from .config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD, MAX_IMAGE_SIZE
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEEPFACE_HOME = PROJECT_ROOT / "Models"
+os.environ.setdefault("DEEPFACE_HOME", str(DEEPFACE_HOME))
 
 
 @dataclass
@@ -91,7 +96,7 @@ def verify_faces(
 def identify_face_from_embeddings(
     live_image: Path,
     candidates: list[dict],
-    facenet_threshold: float = 0.60,
+    facenet_threshold: float = 0.48,
     min_distance_gap: float = 0.08,
     low_confidence_margin: float = 0.12,
 ) -> IdentificationResult:
@@ -112,21 +117,10 @@ def identify_face_from_embeddings(
         )
 
     live_vector = _l2_normalize(np.array(live_embedding, dtype=np.float32))
-    ranked_matches: list[tuple[float, int]] = []
-
-    for candidate in usable_candidates:
-        try:
-            reference_vector = _l2_normalize(
-                np.array(
-                    json.loads(candidate["face_embedding"]),
-                    dtype=np.float32,
-                )
-            )
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-
-        distance = _euclidean_distance(reference_vector, live_vector)
-        ranked_matches.append((distance, int(candidate["id"])))
+    ranked_matches, search_backend = _rank_candidates(
+        live_vector,
+        usable_candidates,
+    )
 
     if not ranked_matches:
         raise FaceMatchError(
@@ -134,7 +128,6 @@ def identify_face_from_embeddings(
             "from the Students page."
         )
 
-    ranked_matches.sort(key=lambda match: match[0])
     best_distance, best_student_id = ranked_matches[0]
     second_best_distance = ranked_matches[1][0] if len(ranked_matches) > 1 else None
     ranked_result = [
@@ -160,7 +153,7 @@ def identify_face_from_embeddings(
             second_best_score=second_best_distance,
             suggested_threshold=suggested_threshold,
             ranked_matches=ranked_result,
-            backend="Stored FaceNet embedding search",
+            backend=search_backend,
             message=(
                 "Compared L2-normalized live and stored FaceNet embeddings. Lower distance "
                 "means the faces are more similar."
@@ -177,7 +170,7 @@ def identify_face_from_embeddings(
             second_best_score=second_best_distance,
             suggested_threshold=suggested_threshold,
             ranked_matches=ranked_result,
-            backend="Stored FaceNet embedding search",
+            backend=search_backend,
             message=(
                 "The closest face is slightly above the threshold. Review the live image, "
                 "lighting, and stored student photo before allowing exam entry."
@@ -192,11 +185,100 @@ def identify_face_from_embeddings(
         second_best_score=second_best_distance,
         suggested_threshold=suggested_threshold,
         ranked_matches=ranked_result,
-        backend="Stored FaceNet embedding search",
+        backend=search_backend,
         message=(
             "Unknown student. The closest face was too far from the threshold or too "
             "close to another registered student."
         ),
+    )
+
+
+def _rank_candidates(
+    live_vector: np.ndarray,
+    candidates: list[dict],
+) -> tuple[list[tuple[float, int]], str]:
+    vectors: list[np.ndarray] = []
+    student_ids: list[int] = []
+    for candidate in candidates:
+        for embedding in _candidate_embeddings(candidate):
+            vector = _l2_normalize(np.array(embedding, dtype=np.float32))
+            if vector.shape != live_vector.shape:
+                continue
+            vectors.append(vector)
+            student_ids.append(int(candidate["id"]))
+
+    if not vectors:
+        return [], "Stored FaceNet embedding search"
+
+    matrix = np.vstack(vectors).astype(np.float32)
+    query = live_vector.reshape(1, -1).astype(np.float32)
+    try:
+        import faiss
+    except Exception:
+        ranked_matches = [
+            (_euclidean_distance(vector, live_vector), student_id)
+            for vector, student_id in zip(vectors, student_ids)
+        ]
+        ranked_matches.sort(key=lambda match: match[0])
+        return _dedupe_ranked_matches(ranked_matches), "Stored FaceNet embedding search"
+
+    index = faiss.IndexFlatL2(matrix.shape[1])
+    index.add(matrix)
+    limit = min(len(student_ids), max(10, len(candidates)))
+    squared_distances, indices = index.search(query, limit)
+    ranked_matches = []
+    for squared_distance, index_position in zip(squared_distances[0], indices[0]):
+        if index_position < 0:
+            continue
+        ranked_matches.append(
+            (float(np.sqrt(max(float(squared_distance), 0.0))), student_ids[index_position])
+        )
+    return _dedupe_ranked_matches(ranked_matches), "FAISS FaceNet embedding search"
+
+
+def _candidate_embeddings(candidate: dict) -> list[list[float]]:
+    raw_values = [
+        candidate.get("face_embedding"),
+        candidate.get("face_embeddings"),
+        candidate.get("embedding"),
+        candidate.get("embeddings"),
+    ]
+    embeddings: list[list[float]] = []
+    for raw_value in raw_values:
+        if not raw_value:
+            continue
+        try:
+            decoded = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if _is_embedding_vector(decoded):
+            embeddings.append([float(value) for value in decoded])
+            continue
+        if isinstance(decoded, list):
+            for item in decoded:
+                if _is_embedding_vector(item):
+                    embeddings.append([float(value) for value in item])
+    return embeddings
+
+
+def _is_embedding_vector(value) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) >= 64
+        and all(isinstance(item, (int, float)) for item in value)
+    )
+
+
+def _dedupe_ranked_matches(
+    ranked_matches: list[tuple[float, int]],
+) -> list[tuple[float, int]]:
+    best_by_student: dict[int, float] = {}
+    for distance, student_id in ranked_matches:
+        if student_id not in best_by_student or distance < best_by_student[student_id]:
+            best_by_student[student_id] = distance
+    return sorted(
+        [(distance, student_id) for student_id, distance in best_by_student.items()],
+        key=lambda match: match[0],
     )
 
 
@@ -206,23 +288,24 @@ def _generate_deepface_embedding(image_path: Path) -> list[float] | None:
     except Exception:
         return None
 
-    for enforce_detection in (True, False):
-        try:
-            representations = DeepFace.represent(
-                img_path=str(image_path),
-                model_name="Facenet",
-                detector_backend="opencv",
-                enforce_detection=enforce_detection,
-                align=True,
-            )
-        except Exception:
-            continue
+    for detector_backend in ("retinaface", "mtcnn", "opencv"):
+        for enforce_detection in (True, False):
+            try:
+                representations = DeepFace.represent(
+                    img_path=str(image_path),
+                    model_name="Facenet",
+                    detector_backend=detector_backend,
+                    enforce_detection=enforce_detection,
+                    align=True,
+                )
+            except Exception:
+                continue
 
-        if not representations:
-            continue
-        embedding = representations[0].get("embedding")
-        if embedding:
-            return [float(value) for value in embedding]
+            if not representations:
+                continue
+            embedding = representations[0].get("embedding")
+            if embedding:
+                return [float(value) for value in embedding]
     return None
 
 
@@ -268,20 +351,23 @@ def _verify_with_deepface(
         return None
 
     result = None
-    for enforce_detection in (True, False):
-        try:
-            result = DeepFace.verify(
-                img1_path=str(reference_image),
-                img2_path=str(live_image),
-                model_name="Facenet",
-                detector_backend="opencv",
-                distance_metric="cosine",
-                enforce_detection=enforce_detection,
-                align=True,
-            )
+    for detector_backend in ("retinaface", "mtcnn", "opencv"):
+        for enforce_detection in (True, False):
+            try:
+                result = DeepFace.verify(
+                    img1_path=str(reference_image),
+                    img2_path=str(live_image),
+                    model_name="Facenet",
+                    detector_backend=detector_backend,
+                    distance_metric="cosine",
+                    enforce_detection=enforce_detection,
+                    align=True,
+                )
+                break
+            except Exception:
+                continue
+        if result is not None:
             break
-        except Exception:
-            continue
     if result is None:
         return None
 

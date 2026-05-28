@@ -1,6 +1,6 @@
 # Exam Verification System
 
-Local prototype for a FaceNet-based automated exam verification system. It lets an invigilator register students, capture a live webcam image, compare it with the stored student photo, and save verification logs.
+FaceNet/MobileFaceNet-based automated exam verification system for Windows desktop, Android, and a supporting Python backend. It lets an administrator register students, capture biometric profiles, verify exam entry, automatically identify students, and keep tamper-evident verification logs.
 
 ## What This Prototype Does
 
@@ -11,9 +11,14 @@ Local prototype for a FaceNet-based automated exam verification system. It lets 
 - captures a live face using the webcam
 - verifies the live face against the registered photo
 - automatically identifies a student by comparing the live face with stored embeddings
+- requires the selected student to also be the closest database-wide match during Verify, reducing John/Paul/Jack mismatches
+- supports continuous desktop kiosk auto-identification for exam-room entry
+- keeps Android/mobile scanning manual to avoid heat, battery drain, and camera crashes
+- displays the registered/stored student image and program in verification results and logs
 - displays face distance, second-best distance, threshold, response time, and suggested threshold
 - reports low-confidence matches when the closest face is slightly above the threshold
 - supports a local OpenCV-based face-unlock scanner with face stability and cooldown
+- uses liveness checks, face tracking, quality gates, crowd safety, result tones, and cooldowns
 - warns when a matched student is not eligible to write
 - stores FaceNet embeddings when the optional backend is available
 - records verification result, score, backend, and time
@@ -32,9 +37,13 @@ When the optional FaceNet backend is installed, the system stores a face embeddi
 
 If FaceNet struggles to detect a face in a webcam capture, the app tries a relaxed embedding pass before falling back. For best results, capture a clear front-facing face with good lighting and avoid motion blur.
 
-The Auto Identify page requires stored FaceNet embeddings. It L2-normalizes the live face embedding and stored student embeddings, calculates the distance to every active student, and only returns a verified student when the closest distance is below the identification threshold. If the closest face is slightly above the threshold but still clearly better than the next closest student, the system reports a Low Confidence Match for manual review. If the closest face is too far away, or if two students are too close in score, the system returns Unknown instead of forcing a match. This mode should use FaceNet rather than the OpenCV fallback because it searches across many students.
+The Auto Identify page requires stored FaceNet/MobileFaceNet embeddings. It L2-normalizes the live face embedding and stored student embeddings, calculates the distance to active students, and only returns a verified student when the closest distance is below the identification threshold and clearly separated from the next closest student. If the closest face is too far away, or if two students are too close in score, the system returns Unknown instead of forcing a match.
 
-The Face Unlock Scanner page uses OpenCV to read webcam frames locally, resize frames to 640x480, detect the largest face, wait until the face remains stable, and then run FaceNet recognition. It does not run recognition on every frame; after each recognition attempt, it waits for a cooldown period before trying again.
+The Python backend uses RetinaFace first, then MTCNN, then OpenCV as detector fallback for FaceNet alignment. Backend automatic identification uses FAISS CPU for scalable nearest-neighbor search and falls back to NumPy ranking if FAISS is unavailable. The Flutter mobile and desktop clients use the bundled MobileFaceNet TFLite model for local embeddings.
+
+The selected-student Verify flow is also database-aware. Selecting John and scanning Paul should fail because the live face must be close enough to John, John must be the closest stored profile, and the gap to the next closest profile must be large enough.
+
+The desktop Auto Identify kiosk keeps the camera running for exam-room entry, but it does not recognize every frame. It follows this flow: Idle -> Face detected -> Liveness check -> Identifying -> Verified/Rejected -> Cooldown -> Idle. It processes only when one face is present, quality is at least 70%, the face is centered and stable, and the liveness check passes. If multiple faces enter the frame, crowd safety pauses recognition until only one student is in front of the camera.
 
 ## Setup
 
@@ -65,7 +74,7 @@ After the app is working, install the FaceNet backend:
 python -m pip install -r requirements-facenet.txt
 ```
 
-The main `requirements.txt` file records the complete dependency set used by the project, including the Streamlit app, desktop app, optional FaceNet backend, and EXE build tool. Use it when setting up the full project on a machine that can handle the heavier TensorFlow/DeepFace packages:
+The main `requirements.txt` file records the complete Python dependency set used by the Streamlit app and optional FaceNet backend. Use it when setting up the full Python backend on a machine that can handle the heavier TensorFlow/DeepFace packages:
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -89,68 +98,37 @@ run_app.bat
 
 Streamlit will open the app in your browser.
 
-## Desktop App
+## Flutter Desktop and Android App
 
-This project also includes a lightweight Tkinter desktop version that reuses the same SQLite database, student photos, verification logs, and face matching backend.
+The old Tkinter desktop prototype has been retired. The production-style cross-platform client is built with Flutter so the same interface can target Windows desktop and Android.
 
-The easiest folder launch option is:
-
-```text
-OPEN_EXAM_VERIFICATION.vbs
-```
-
-It opens the packaged EXE when `dist\ExamVerificationSystem\ExamVerificationSystem.exe` exists. If the EXE has not been built yet, it falls back to the Python desktop app without leaving a command window open.
-
-The command-window launcher is also available for troubleshooting:
+Flutter app location:
 
 ```text
-START_EXAM_VERIFICATION.bat
+Flutter\examverify_app
 ```
 
-Run the desktop app with:
+Run Flutter checks from the app folder:
 
 ```powershell
-.\.venv\Scripts\python.exe Desktop\desktop_app.py
+cd Flutter\examverify_app
+flutter analyze
+flutter test
 ```
 
-Or double-click:
+Current Flutter status:
 
-```text
-run_desktop.bat
-```
+- Flutter SDK 3.41.9 is installed at `C:\Users\lapto\development\flutter`
+- the app has Windows and Android project folders
+- shared UI and biometric workflows are in `Flutter\examverify_app\lib\main.dart`
+- Windows desktop uses a local Python helper API for liveness and MobileFaceNet desktop signatures
+- Android uses on-device camera scanning and the bundled MobileFaceNet TFLite model
+- Auto Identify is continuous only on Windows desktop; Android remains tap-to-scan
 
-The desktop version is designed for low-resource laptops:
+Platform setup:
 
-- uses Tkinter instead of a heavier desktop UI framework
-- uses OpenCV webcam preview at 640x480
-- detects the largest face only
-- waits for a stable face before recognition
-- uses a cooldown after recognition
-- reuses stored FaceNet embeddings instead of recalculating every student face
-
-Desktop tabs include Dashboard, Register, Students, Verify, Auto Scanner, and Logs.
-
-## Build Windows EXE
-
-Install the build dependency only when you are ready to create an EXE:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-```
-
-Then run:
-
-```text
-build_desktop_exe.bat
-```
-
-The output will be created under:
-
-```text
-dist\ExamVerificationSystem\ExamVerificationSystem.exe
-```
-
-FaceNet, DeepFace, and TensorFlow can make the packaged EXE large. For a 4GB RAM laptop, test the desktop app first using `run_desktop.bat`, then package only after the workflow is stable.
+- Windows desktop builds need Visual Studio with the **Desktop development with C++** workload
+- Android builds need Android Studio and the Android SDK
 
 ## Demo Flow
 
@@ -168,23 +146,22 @@ FaceNet, DeepFace, and TensorFlow can make the packaged EXE large. For a 4GB RAM
 
 ### Automatic Identification
 
-1. Confirm the optional FaceNet backend is installed.
-2. Open the Students tab and generate or refresh embeddings for registered students.
+1. Confirm students have compatible MobileFaceNet/FaceNet profiles.
+2. Open the Students tab and generate or refresh embeddings for older records if needed.
 3. Open the Auto Identify tab.
-4. Capture the student's face using the webcam.
-5. Show the automatically matched student number, name, program, distance score, threshold, response time, suggested threshold, and eligibility status.
+4. On desktop, the kiosk scanner runs continuously; on mobile, tap Start Scanner.
+5. Show the automatically matched student number, name, program, stored image, distance score, threshold, and eligibility status.
 6. Review the closest stored student distances to compare same-person and different-person scores.
 7. If the student is not eligible, show the warning message instead of approving exam entry.
 
-### Face Unlock Scanner
+### Desktop Entry Kiosk
 
-1. Confirm the optional FaceNet backend is installed and embeddings exist.
-2. Open the Face Unlock Scanner tab.
-3. Start the automatic scanner.
-4. The scanner shows "Scanning face..." when no stable face is ready.
-5. When a face is detected, hold still until recognition starts.
-6. The scanner displays Verified, Low Confidence Match, or Unknown Student automatically.
-7. Use the displayed distance values to tune the threshold before final evaluation.
+1. Open Auto Identify on the Windows desktop app.
+2. Let one student stand in front of the webcam.
+3. The scanner waits for one face, 70%+ quality, stable center pose, and liveness.
+4. The scanner identifies the student, plays a verified or rejected tone, then enters cooldown.
+5. The next student steps forward after cooldown.
+6. If multiple faces are visible, recognition pauses until the frame is clear.
 
 The app uses sidebar navigation so the webcam capture component is only loaded on camera-based pages. Moving to another page releases the camera in the browser.
 
@@ -220,7 +197,9 @@ Recommended evaluation settings:
 
 - use Auto or FaceNet only when the FaceNet backend is installed
 - start with the FaceNet distance threshold at 0.45
-- start with the Auto Identify maximum L2 distance at 0.60
+- start with the backend Auto Identify maximum L2 distance at 0.48
+- start with Flutter Auto Identify threshold at 0.30 and minimum gap at 0.08
+- start with Flutter Verify threshold at 0.28 and minimum gap at 0.06
 - compare same-person and different-person distance values before changing thresholds
 - use low-confidence results for manual review rather than automatic approval
 - use OpenCV fallback only for prototype demonstrations when FaceNet is unavailable
