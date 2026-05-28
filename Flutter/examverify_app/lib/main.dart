@@ -3886,7 +3886,7 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
               );
             }
             return Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(flex: 7, child: preview),
                 const SizedBox(width: 16),
