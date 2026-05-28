@@ -38,22 +38,30 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
         return _empty_signal("Captured image could not be read.")
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    face_candidates: list[tuple[int, int, int, int]] = []
     cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
     faces = cascade.detectMultiScale(
         gray,
-        scaleFactor=1.06,
-        minNeighbors=4,
-        minSize=(54, 54),
+        scaleFactor=1.08,
+        minNeighbors=6,
+        minSize=(90, 90),
     )
-    if len(faces) == 0:
-        return _empty_signal("Position your face inside the alignment guide.")
-
-    x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
+    if len(faces) > 0:
+        face_candidates = [tuple(int(value) for value in face) for face in faces]
+    x, y, width, height = (
+        max(face_candidates, key=lambda face: face[2] * face[3])
+        if face_candidates
+        else (0, 0, 0, 0)
+    )
     face_area = (width * height) / max(float(image.shape[0] * image.shape[1]), 1.0)
-    brightness = float(gray[y : y + height, x : x + width].mean() / 255.0)
-    fallback_quality = min(0.86, max(0.24, (face_area * 5.4) + (brightness * 0.35)))
+    brightness = (
+        float(gray[y : y + height, x : x + width].mean() / 255.0)
+        if width > 0 and height > 0
+        else 0.0
+    )
+    fallback_quality = min(0.86, max(0.0, (face_area * 5.4) + (brightness * 0.35)))
 
     try:
         import mediapipe as mp
@@ -68,6 +76,7 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
             )
         result = _desktop_face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         if result.multi_face_landmarks:
+            detected_count = len(result.multi_face_landmarks)
             points = result.multi_face_landmarks[0].landmark
             frame_width = float(image.shape[1])
             frame_height = float(image.shape[0])
@@ -90,9 +99,12 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
             )
             left_eye = _eye_openness(points, [33, 160, 158, 133, 153, 144])
             right_eye = _eye_openness(points, [362, 385, 387, 263, 373, 380])
-            quality = min(1.0, max(fallback_quality, 0.50 + (face_area * 2.6)))
+            mesh_area = face_width * face_height
+            quality = min(1.0, max(fallback_quality, 0.34 + (mesh_area * 1.8)))
+            if mesh_area < 0.018 or quality < 0.35:
+                return _empty_signal("Step closer and face the camera.")
             return {
-                "face_count": 1,
+                "face_count": detected_count,
                 "score": quality,
                 "yaw": yaw,
                 "pitch": pitch,
@@ -105,8 +117,11 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
     except Exception:
         pass
 
+    if not face_candidates or fallback_quality < 0.45:
+        return _empty_signal("Position one clear face inside the alignment guide.")
+
     return {
-        "face_count": 1,
+        "face_count": len(face_candidates),
         "score": fallback_quality,
         "yaw": 0.0,
         "pitch": 0.0,
@@ -114,7 +129,7 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
         "left_eye_open": 0.8,
         "right_eye_open": 0.8,
         "pose_reliable": False,
-        "message": "Face locked. Improving landmark tracking.",
+        "message": "Face candidate found. Waiting for reliable landmarks.",
     }
 
 

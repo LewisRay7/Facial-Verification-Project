@@ -439,7 +439,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       ),
       'Auto Identify' => AutoIdentifyPage(
         students: students,
-        onVerificationSaved: _saveVerification,
+        onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
       ),
       'Students' => StudentsPage(
@@ -482,7 +482,16 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     });
   }
 
-  Future<void> _saveVerification(VerificationRecord record) async {
+  Future<void> _saveVerification(VerificationRecord record) =>
+      _saveVerificationRecord(record, navigateToLogs: true);
+
+  Future<void> _saveVerificationInPlace(VerificationRecord record) =>
+      _saveVerificationRecord(record, navigateToLogs: false);
+
+  Future<void> _saveVerificationRecord(
+    VerificationRecord record, {
+    required bool navigateToLogs,
+  }) async {
     _touchSession();
     final client = onlineClient;
     if (client != null) {
@@ -496,7 +505,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     if (!mounted) return;
     setState(() {
       logs = loadedLogs;
-      _selectPage('Logs');
+      if (navigateToLogs) _selectPage('Logs');
     });
   }
 
@@ -3327,14 +3336,16 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
                       ),
                     ),
                   ],
-                  const SizedBox(height: 18),
-                  const Divider(color: AppColors.border),
-                  const SizedBox(height: 10),
-                  for (final student in widget.students.take(5))
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: StudentSummary(student: student),
-                    ),
+                  if (!desktopCameraAvailable) ...[
+                    const SizedBox(height: 18),
+                    const Divider(color: AppColors.border),
+                    const SizedBox(height: 10),
+                    for (final student in widget.students.take(5))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: StudentSummary(student: student),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -3512,6 +3523,13 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
   }
 
   Future<void> _playVerificationTone(VerificationStatus status) async {
+    if (Platform.isWindows) {
+      final script = status == VerificationStatus.verified
+          ? '[console]::beep(880,160); Start-Sleep -Milliseconds 70; [console]::beep(1175,180)'
+          : '[console]::beep(330,220); Start-Sleep -Milliseconds 70; [console]::beep(220,260)';
+      await Process.run('powershell.exe', ['-NoProfile', '-Command', script]);
+      return;
+    }
     final sound = status == VerificationStatus.verified
         ? SystemSoundType.click
         : SystemSoundType.alert;
@@ -3581,7 +3599,9 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
   bool previewReady = false;
   bool analyzing = false;
   int stableFrames = 0;
+  int livenessFrames = 0;
   static const minimumQuality = 0.70;
+  static const minimumPresenceQuality = 0.45;
   static const cooldownDuration = Duration(seconds: 3);
 
   @override
@@ -3672,8 +3692,13 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
       final nextSignal = await FaceEngine.analyzeFaceSignal(frame);
       if (!mounted) return;
       signal = nextSignal;
+      final strongSingleFace =
+          nextSignal.faceCount == 1 &&
+          nextSignal.quality >= minimumPresenceQuality &&
+          nextSignal.poseReliable;
       if (nextSignal.faceCount > 1) {
         stableFrames = 0;
+        livenessFrames = 0;
         setState(() {
           phase = _KioskScanPhase.crowdBlocked;
           message =
@@ -3681,11 +3706,14 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
         });
         return;
       }
-      if (!nextSignal.facePresent) {
+      if (!strongSingleFace) {
         stableFrames = 0;
+        livenessFrames = 0;
         setState(() {
           phase = _KioskScanPhase.idle;
-          message = 'Idle. Waiting for one student to step into frame.';
+          message = nextSignal.faceCount == 1
+              ? 'Weak face signal. Step closer and face the camera directly.'
+              : 'Idle. Waiting for one student to step into frame.';
         });
         return;
       }
@@ -3694,12 +3722,16 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
           nextSignal.yaw.abs() < 14 &&
           nextSignal.pitch.abs() < 14 &&
           nextSignal.roll.abs() < 14;
+      final eyesOpen =
+          ((nextSignal.leftEyeOpen + nextSignal.rightEyeOpen) / 2) > 0.34;
+      final liveEnough = centered && eyesOpen;
       stableFrames = centered ? stableFrames + 1 : 0;
-      if (stableFrames < 2) {
+      livenessFrames = liveEnough ? livenessFrames + 1 : 0;
+      if (stableFrames < 4 || livenessFrames < 3) {
         setState(() {
           phase = _KioskScanPhase.faceDetected;
-          message = centered
-              ? 'Face detected. Hold still...'
+          message = liveEnough
+              ? 'Face detected. Hold still for liveness confirmation...'
               : 'Face detected. Center face until quality reaches 70%.';
         });
         return;
@@ -3725,6 +3757,7 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
 
   Future<void> _identifyAcceptedFrame(File frame) async {
     stableFrames = 0;
+    livenessFrames = 0;
     setState(() {
       phase = _KioskScanPhase.livenessCheck;
       message = 'Liveness check...';
@@ -3958,6 +3991,16 @@ class _KioskStatusPanel extends StatelessWidget {
               _SignalChip(
                 label: 'Quality ${(((signal?.quality ?? 0) * 100).round())}%',
                 color: AppColors.cyan,
+              ),
+              _SignalChip(
+                label:
+                    'Pose Y${(signal?.yaw ?? 0).toStringAsFixed(0)} P${(signal?.pitch ?? 0).toStringAsFixed(0)} R${(signal?.roll ?? 0).toStringAsFixed(0)}',
+                color: AppColors.cyan,
+              ),
+              _SignalChip(
+                label:
+                    'Eyes ${((((signal?.leftEyeOpen ?? 0) + (signal?.rightEyeOpen ?? 0)) / 2) * 100).round()}%',
+                color: AppColors.green,
               ),
               _SignalChip(
                 label: 'Faces ${signal?.faceCount ?? 0}/1',
@@ -8188,6 +8231,26 @@ class FaceEngine {
   }
 
   static Future<MobileLivenessResult> checkLiveness(File imageFile) async {
+    if (Platform.isWindows) {
+      final faceSignal = await analyzeFaceSignal(imageFile);
+      final eyesOpen =
+          ((faceSignal.leftEyeOpen + faceSignal.rightEyeOpen) / 2) > 0.34;
+      final passed =
+          faceSignal.faceCount == 1 &&
+          faceSignal.poseReliable &&
+          faceSignal.quality >= 0.70 &&
+          faceSignal.yaw.abs() <= 14 &&
+          faceSignal.pitch.abs() <= 14 &&
+          faceSignal.roll.abs() <= 14 &&
+          eyesOpen;
+      return MobileLivenessResult(
+        passed: passed,
+        message: passed
+            ? 'Desktop liveness and pose checks passed.'
+            : 'Desktop liveness needs one clear centered face at 70%+ quality.',
+        score: faceSignal.quality,
+      );
+    }
     if (!Platform.isAndroid && !Platform.isIOS) {
       final bytes = await imageFile.readAsBytes();
       final decoded = imglib.decodeImage(bytes);
