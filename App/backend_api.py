@@ -406,14 +406,15 @@ def _crop_largest_face(image_path: Path) -> np.ndarray | None:
     if image is None:
         return None
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    detection_gray = cv2.equalizeHist(gray)
     cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
     faces = cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.06,
-        minNeighbors=4,
-        minSize=(54, 54),
+        detection_gray,
+        scaleFactor=1.08,
+        minNeighbors=5,
+        minSize=(70, 70),
     )
     if len(faces) == 0:
         return None
@@ -427,6 +428,29 @@ def _crop_largest_face(image_path: Path) -> np.ndarray | None:
     return image[top:bottom, left:right]
 
 
+def _balance_low_light(cropped_face: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(cropped_face, cv2.COLOR_BGR2LAB)
+    lightness, channel_a, channel_b = cv2.split(lab)
+    brightness = float(np.mean(lightness) / 255.0)
+    if brightness >= 0.42:
+        return cropped_face
+
+    strength = min(1.0, max(0.0, (0.42 - brightness) / 0.42))
+    clip_limit = 1.8 + (1.0 * strength)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    balanced_lightness = clahe.apply(lightness)
+    balanced = cv2.cvtColor(
+        cv2.merge((balanced_lightness, channel_a, channel_b)),
+        cv2.COLOR_LAB2BGR,
+    )
+    gamma = 1.0 - (0.28 * strength)
+    table = np.array(
+        [((value / 255.0) ** gamma) * 255 for value in range(256)],
+        dtype=np.uint8,
+    )
+    return cv2.LUT(balanced, table)
+
+
 def _generate_mobilefacenet_signature(cropped_face: np.ndarray) -> list[float]:
     global _mobilefacenet_interpreter
     if _mobilefacenet_interpreter is None:
@@ -438,7 +462,8 @@ def _generate_mobilefacenet_signature(cropped_face: np.ndarray) -> list[float]:
         _mobilefacenet_interpreter = tf.lite.Interpreter(model_path=str(model_path))
         _mobilefacenet_interpreter.allocate_tensors()
 
-    resized = cv2.resize(cropped_face, (MOBILEFACENET_INPUT_SIZE, MOBILEFACENET_INPUT_SIZE))
+    balanced_face = _balance_low_light(cropped_face)
+    resized = cv2.resize(balanced_face, (MOBILEFACENET_INPUT_SIZE, MOBILEFACENET_INPUT_SIZE))
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)
     input_tensor = np.expand_dims((rgb - 127.5) / 128.0, axis=0)
     input_details = _mobilefacenet_interpreter.get_input_details()[0]

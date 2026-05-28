@@ -38,12 +38,13 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
         return _empty_signal("Captured image could not be read.")
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    detection_gray = cv2.equalizeHist(gray)
     face_candidates: list[tuple[int, int, int, int]] = []
     cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
     faces = cascade.detectMultiScale(
-        gray,
+        detection_gray,
         scaleFactor=1.08,
         minNeighbors=6,
         minSize=(90, 90),

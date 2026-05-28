@@ -434,7 +434,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       ),
       'Verify' => VerifyPage(
         students: students,
-        onVerificationSaved: _saveVerification,
+        onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
       ),
       'Auto Identify' => AutoIdentifyPage(
@@ -481,9 +481,6 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       _selectPage('Students');
     });
   }
-
-  Future<void> _saveVerification(VerificationRecord record) =>
-      _saveVerificationRecord(record, navigateToLogs: true);
 
   Future<void> _saveVerificationInPlace(VerificationRecord record) =>
       _saveVerificationRecord(record, navigateToLogs: false);
@@ -3145,6 +3142,9 @@ class _VerifyPageState extends State<VerifyPage> {
           resultScore = liveness.score;
           resultMessage = 'Spoof detected: ${liveness.message}';
         });
+        await ExamVerifyFeedback.playVerificationTone(
+          VerificationStatus.spoofDetected,
+        );
         return;
       }
       final liveSignature = await FaceEngine.createSignature(storedLivePhoto);
@@ -3219,9 +3219,13 @@ class _VerifyPageState extends State<VerifyPage> {
             ? 'Not verified: the selected student is not clearly separated from the next closest profile. Distances: $distanceSummary'
             : 'Not verified. ${FaceEngine.signatureBackend} score ${score.toStringAsFixed(3)} or eligibility failed. Distances: $distanceSummary';
       });
+      await ExamVerifyFeedback.playVerificationTone(status);
     } catch (error) {
       if (!mounted) return;
       setState(() => resultMessage = error.toString());
+      await ExamVerifyFeedback.playVerificationTone(
+        VerificationStatus.notVerified,
+      );
     } finally {
       if (mounted) setState(() => verifying = false);
     }
@@ -3523,21 +3527,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
   }
 
   Future<void> _playVerificationTone(VerificationStatus status) async {
-    if (Platform.isWindows) {
-      final script = status == VerificationStatus.verified
-          ? '[console]::beep(880,160); Start-Sleep -Milliseconds 70; [console]::beep(1175,180)'
-          : '[console]::beep(330,220); Start-Sleep -Milliseconds 70; [console]::beep(220,260)';
-      await Process.run('powershell.exe', ['-NoProfile', '-Command', script]);
-      return;
-    }
-    final sound = status == VerificationStatus.verified
-        ? SystemSoundType.click
-        : SystemSoundType.alert;
-    await SystemSound.play(sound);
-    if (status != VerificationStatus.verified) {
-      await Future<void>.delayed(const Duration(milliseconds: 160));
-      await SystemSound.play(SystemSoundType.alert);
-    }
+    await ExamVerifyFeedback.playVerificationTone(status);
   }
 }
 
@@ -3553,6 +3543,26 @@ class _AutoIdentifyOutcome {
   final StudentRecord? student;
   final double score;
   final String message;
+}
+
+class ExamVerifyFeedback {
+  static Future<void> playVerificationTone(VerificationStatus status) async {
+    if (Platform.isWindows) {
+      final script = status == VerificationStatus.verified
+          ? '[console]::beep(880,180); Start-Sleep -Milliseconds 70; [console]::beep(1175,220)'
+          : '[console]::beep(330,240); Start-Sleep -Milliseconds 80; [console]::beep(220,280)';
+      await Process.run('powershell.exe', ['-NoProfile', '-Command', script]);
+      return;
+    }
+    final sound = status == VerificationStatus.verified
+        ? SystemSoundType.click
+        : SystemSoundType.alert;
+    await SystemSound.play(sound);
+    if (status != VerificationStatus.verified) {
+      await Future<void>.delayed(const Duration(milliseconds: 180));
+      await SystemSound.play(SystemSoundType.alert);
+    }
+  }
 }
 
 enum _KioskScanPhase {
@@ -3600,8 +3610,8 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
   bool analyzing = false;
   int stableFrames = 0;
   int livenessFrames = 0;
-  static const minimumQuality = 0.70;
-  static const minimumPresenceQuality = 0.45;
+  static const minimumQuality = 0.62;
+  static const minimumPresenceQuality = 0.40;
   static const cooldownDuration = Duration(seconds: 3);
 
   @override
@@ -3727,12 +3737,12 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
       final liveEnough = centered && eyesOpen;
       stableFrames = centered ? stableFrames + 1 : 0;
       livenessFrames = liveEnough ? livenessFrames + 1 : 0;
-      if (stableFrames < 4 || livenessFrames < 3) {
+      if (stableFrames < 5 || livenessFrames < 4) {
         setState(() {
           phase = _KioskScanPhase.faceDetected;
           message = liveEnough
               ? 'Face detected. Hold still for liveness confirmation...'
-              : 'Face detected. Center face until quality reaches 70%.';
+              : 'Face detected. Center face until quality reaches 62% in steady light.';
         });
         return;
       }
@@ -5290,8 +5300,9 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
   int blinkCount = 0;
   int blinkFallbackFrames = 0;
   int challengeStableFrames = 0;
-  static const double minimumPortraitQuality = 0.70;
-  static const double minimumDesktopScanQuality = 0.70;
+  static const double minimumPortraitQuality = 0.64;
+  static const double minimumDesktopScanQuality = 0.62;
+  static const double minimumMobileScanQuality = 0.50;
   final List<String> completedChallengeLabels = [];
   bool wasClosed = false;
   bool analyzing = false;
@@ -5337,7 +5348,7 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
     const center = _BiometricChallenge(
       _BiometricChallengeType.centerInitial,
       'Center Face',
-      'Align your face until quality reaches 70%.',
+      'Align your face and hold still until quality is safe for matching.',
     );
     const blink = _BiometricChallenge(
       _BiometricChallengeType.blink,
@@ -5587,12 +5598,22 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
     switch (challenge.type) {
       case _BiometricChallengeType.centerInitial:
         final isDesktop = Platform.isWindows;
+        final minQuality = isDesktop
+            ? minimumDesktopScanQuality
+            : minimumMobileScanQuality;
         final centered =
             nextSignal.yaw.abs() < (isDesktop ? 14.0 : 8.0) &&
             nextSignal.pitch.abs() < (isDesktop ? 14.0 : 8.0) &&
             nextSignal.roll.abs() < (isDesktop ? 14.0 : 10.0) &&
-            (!isDesktop || nextSignal.quality >= minimumDesktopScanQuality);
-        return _stableChallenge(centered, requiredFrames: isDesktop ? 1 : 2);
+            nextSignal.quality >= minQuality &&
+            (isDesktop ? nextSignal.poseReliable : true);
+        final frames = switch (widget.mode) {
+          BiometricScanMode.verification => isDesktop ? 4 : 3,
+          BiometricScanMode.autoIdentify => isDesktop ? 4 : 3,
+          BiometricScanMode.enrollment => isDesktop ? 3 : 3,
+          BiometricScanMode.portrait => 3,
+        };
+        return _stableChallenge(centered, requiredFrames: frames);
       case _BiometricChallengeType.lookLeft:
         return _stableChallenge(nextSignal.yaw > 11.0, requiredFrames: 2);
       case _BiometricChallengeType.lookRight:
@@ -5628,10 +5649,12 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
           return true;
         }
         if (Platform.isWindows &&
+            widget.mode != BiometricScanMode.verification &&
             nextSignal.quality >= minimumDesktopScanQuality &&
-            nextSignal.facePresent) {
+            nextSignal.facePresent &&
+            nextSignal.poseReliable) {
           blinkFallbackFrames++;
-          if (blinkFallbackFrames >= 4) {
+          if (blinkFallbackFrames >= 12) {
             blinkCount = 1;
             return true;
           }
@@ -5700,7 +5723,7 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
     final portraitMode =
         challenges[challengeIndex].type == _BiometricChallengeType.centerFinal;
     final portraitHoldMessage = portraitLockedAt == null
-        ? 'Center your face in good lighting. Quality must reach 70%.'
+        ? 'Center your face in the best available light. Quality must be stable.'
         : Platform.isWindows
         ? 'Face locked. Capturing in a moment.'
         : 'Face locked. Hold still for 2 seconds.';
@@ -5722,7 +5745,7 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
         ? nextSignal.quality >= minimumDesktopScanQuality
         : portraitMode
         ? nextSignal.quality >= minimumPortraitQuality
-        : nextSignal.quality > 0.16;
+        : nextSignal.quality >= minimumMobileScanQuality;
     if (nextSignal.facePresent && canSelectFrame) {
       final score = _portraitScore(nextSignal);
       final previousBest = bestFrame;
@@ -8238,7 +8261,7 @@ class FaceEngine {
       final passed =
           faceSignal.faceCount == 1 &&
           faceSignal.poseReliable &&
-          faceSignal.quality >= 0.70 &&
+          faceSignal.quality >= 0.62 &&
           faceSignal.yaw.abs() <= 14 &&
           faceSignal.pitch.abs() <= 14 &&
           faceSignal.roll.abs() <= 14 &&
@@ -8247,7 +8270,7 @@ class FaceEngine {
         passed: passed,
         message: passed
             ? 'Desktop liveness and pose checks passed.'
-            : 'Desktop liveness needs one clear centered face at 70%+ quality.',
+            : 'Desktop liveness needs one clear centered face with stable low-light quality.',
         score: faceSignal.quality,
       );
     }
@@ -8421,8 +8444,9 @@ class MobileFaceEmbeddingEngine {
     final interpreter = _interpreter ??= await tfl.Interpreter.fromAsset(
       'assets/models/mobilefacenet.tflite',
     );
+    final balancedFace = _balanceLowLight(face);
     final resized = imglib.copyResize(
-      face,
+      balancedFace,
       width: inputSize,
       height: inputSize,
     );
@@ -8449,6 +8473,38 @@ class MobileFaceEmbeddingEngine {
       throw FaceEngineException('Could not generate a biometric embedding.');
     }
     return raw.map((value) => value / norm).toList();
+  }
+
+  static imglib.Image _balanceLowLight(imglib.Image face) {
+    final brightness = FaceEngine._averageBrightness(face);
+    if (brightness >= 0.42) return face;
+
+    final balanced = imglib.Image.from(face);
+    final strength = ((0.42 - brightness) / 0.42).clamp(0.0, 1.0);
+    final gamma = 1.0 - (0.28 * strength);
+    final lift = 18.0 * strength;
+    final contrast = 1.0 + (0.18 * strength);
+
+    int channel(num value) {
+      final normalized = (value / 255.0).clamp(0.0, 1.0);
+      final corrected = math.pow(normalized, gamma).toDouble() * 255.0;
+      final contrasted = ((corrected - 128.0) * contrast) + 128.0 + lift;
+      return contrasted.round().clamp(0, 255);
+    }
+
+    for (var y = 0; y < balanced.height; y++) {
+      for (var x = 0; x < balanced.width; x++) {
+        final pixel = balanced.getPixel(x, y);
+        balanced.setPixelRgb(
+          x,
+          y,
+          channel(pixel.r),
+          channel(pixel.g),
+          channel(pixel.b),
+        );
+      }
+    }
+    return balanced;
   }
 }
 
