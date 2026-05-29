@@ -54,6 +54,23 @@ def list_verification_logs(
     return {"ok": True, "logs": [_verification_log_to_dict(row) for row in rows]}
 
 
+@router.delete("/logs")
+def clear_verification_logs(
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    deleted_count = db.query(VerificationLog).count()
+    db.query(VerificationLog).delete(synchronize_session=False)
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="VERIFICATION_LOGS_CLEARED",
+        metadata={"deleted": deleted_count},
+    )
+    db.commit()
+    return {"ok": True, "deleted": deleted_count}
+
+
 @router.get("/audit")
 def list_audit_logs(
     db: Annotated[Session, Depends(get_db)],

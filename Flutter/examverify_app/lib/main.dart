@@ -176,6 +176,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         return;
       }
       if (DateTime.now().difference(lastActivity!) > sessionTimeout) {
+        TrustedSessionCache.clear();
         setState(() {
           authUser = null;
           selectedIndex = 0;
@@ -203,6 +204,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
   }
 
   void _logout() {
+    TrustedSessionCache.clear();
     setState(() {
       authUser = null;
       lastActivity = null;
@@ -238,37 +240,11 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
                 ),
               )
               .toList();
-          if (authUser?.role == 'Super Admin' || authUser?.role == 'Admin') {
-            final remoteByKey = {
-              for (final student in remoteStudents)
-                student.studentNumberHash ??
-                        AuthService.hashIdentifier(student.studentNumber):
-                    student,
-            };
-            var pushedLocalRecord = false;
-            for (final student in localStudents) {
-              final key =
-                  student.studentNumberHash ??
-                  AuthService.hashIdentifier(student.studentNumber);
-              final remote = remoteByKey[key];
-              final shouldUploadPortrait =
-                  remote != null &&
-                  !OnlineBackendClient.isPortablePortrait(remote.photoPath) &&
-                  student.photoPath.isNotEmpty &&
-                  File(student.photoPath).existsSync();
-              if (remote == null || shouldUploadPortrait) {
-                await client.registerStudent(student);
-                pushedLocalRecord = true;
-              }
-            }
-            if (pushedLocalRecord) {
-              remoteStudents = await client.listStudents();
-            }
-          }
-          loadedStudents = _mergeStudents(localStudents, remoteStudents);
-          for (final student in loadedStudents) {
-            await store.upsertStudent(student);
-          }
+          loadedStudents = _mergeRemoteWithLocalCache(
+            localStudents,
+            remoteStudents,
+          );
+          await store.replaceStudents(loadedStudents);
           loadedLogs = await client.listLogs();
         } else {
           loadedStudents = await store.listStudents();
@@ -288,49 +264,53 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     });
   }
 
-  List<StudentRecord> _mergeStudents(
+  List<StudentRecord> _mergeRemoteWithLocalCache(
     List<StudentRecord> localStudents,
     List<StudentRecord> remoteStudents,
   ) {
-    final merged = <String, StudentRecord>{};
-    for (final student in localStudents) {
-      merged[student.studentNumberHash ??
-              AuthService.hashIdentifier(student.studentNumber)] =
-          student;
-    }
-    for (final remote in remoteStudents) {
-      final key =
-          remote.studentNumberHash ??
-          AuthService.hashIdentifier(remote.studentNumber);
-      final local = merged[key];
-      merged[key] = local == null
-          ? remote
-          : StudentRecord(
-              id: remote.id ?? local.id,
-              studentNumber: local.studentNumber,
-              studentNumberHash: key,
-              fullName: remote.fullName,
-              program: remote.program,
-              eligible: remote.eligible,
-              note: remote.note.isNotEmpty ? remote.note : local.note,
-              photoPath:
-                  local.photoPath.isNotEmpty &&
-                      File(local.photoPath).existsSync()
-                  ? local.photoPath
-                  : remote.photoPath,
-              signature: local.signature.isNotEmpty
-                  ? local.signature
-                  : remote.signature,
-              backendEmbedding:
-                  remote.backendEmbedding ?? local.backendEmbedding,
-              backendName: remote.backendName ?? local.backendName,
-            );
-    }
-    final result = merged.values.toList()
-      ..sort(
-        (a, b) => a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase()),
-      );
+    final localByKey = {
+      for (final student in localStudents)
+        student.studentNumberHash ??
+                AuthService.hashIdentifier(student.studentNumber):
+            student,
+    };
+    final result =
+        [
+          for (final remote in remoteStudents)
+            _mergeStudentCache(
+              remote,
+              localByKey[remote.studentNumberHash ??
+                  AuthService.hashIdentifier(remote.studentNumber)],
+            ),
+        ]..sort(
+          (a, b) =>
+              a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase()),
+        );
     return result;
+  }
+
+  StudentRecord _mergeStudentCache(StudentRecord remote, StudentRecord? local) {
+    if (local == null) return remote;
+    final localPhotoUsable =
+        local.photoPath.isNotEmpty && File(local.photoPath).existsSync();
+    return StudentRecord(
+      id: remote.id ?? local.id,
+      studentNumber: local.studentNumber,
+      studentNumberHash:
+          remote.studentNumberHash ??
+          local.studentNumberHash ??
+          AuthService.hashIdentifier(local.studentNumber),
+      fullName: remote.fullName,
+      program: remote.program,
+      eligible: remote.eligible,
+      note: remote.note.isNotEmpty ? remote.note : local.note,
+      photoPath: localPhotoUsable ? local.photoPath : remote.photoPath,
+      signature: remote.signature.isNotEmpty
+          ? remote.signature
+          : local.signature,
+      backendEmbedding: remote.backendEmbedding ?? local.backendEmbedding,
+      backendName: remote.backendName ?? local.backendName,
+    );
   }
 
   List<VerificationRecord> _hydrateVerificationLogs(
@@ -350,6 +330,17 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
               AuthService.hashIdentifier(log.studentNumber)],
         ),
     ];
+  }
+
+  Future<void> _resetEvaluationMetrics() async {
+    _touchSession();
+    final client = onlineClient;
+    if (client != null) {
+      await client.clearVerificationLogs();
+    } else {
+      await store.clearLogs();
+    }
+    await _loadData();
   }
 
   @override
@@ -447,7 +438,11 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         onToggleEligibility: _toggleEligibility,
         onDeleteStudent: _deleteStudent,
       ),
-      'Evaluation' => EvaluationPage(logs: logs),
+      'Evaluation' => EvaluationPage(
+        logs: logs,
+        onResetMetrics: _resetEvaluationMetrics,
+        onlineMode: onlineClient != null,
+      ),
       'Access Requests' => AdminRequestsPage(client: onlineClient),
       _ => LogsPage(logs: logs),
     };
@@ -473,8 +468,9 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     }
     final localStudents = await store.listStudents();
     final loadedStudents = client != null
-        ? _mergeStudents(localStudents, await client.listStudents())
+        ? _mergeRemoteWithLocalCache(localStudents, await client.listStudents())
         : localStudents;
+    if (client != null) await store.replaceStudents(loadedStudents);
     if (!mounted) return;
     setState(() {
       students = loadedStudents;
@@ -514,7 +510,11 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     if (client != null) {
       await client.registerStudent(updated);
     }
-    final loadedStudents = await store.listStudents();
+    final localStudents = await store.listStudents();
+    final loadedStudents = client != null
+        ? _mergeRemoteWithLocalCache(localStudents, await client.listStudents())
+        : localStudents;
+    if (client != null) await store.replaceStudents(loadedStudents);
     if (!mounted) return;
     setState(() => students = loadedStudents);
   }
@@ -796,7 +796,6 @@ class _LoginPageState extends State<LoginPage>
   String selectedRole = 'Admin';
   bool onlineMode = true;
   bool busy = false;
-  bool rememberDevice = true;
   bool passwordVisible = false;
   late final AnimationController _motionController;
 
@@ -839,14 +838,6 @@ class _LoginPageState extends State<LoginPage>
       return;
     }
     if (onlineMode) {
-      final trustedUser = TrustedSessionCache.get(
-        usernameController.text,
-        backendUrlController.text,
-      );
-      if (trustedUser != null && _roleAllows(trustedUser)) {
-        widget.onLogin(trustedUser);
-        return;
-      }
       await _requestOnlineOtp(openDialog: true);
       return;
     }
@@ -939,9 +930,6 @@ class _LoginPageState extends State<LoginPage>
       );
       if (!_roleAllows(user)) {
         throw Exception('This account is not approved for the selected role.');
-      }
-      if (rememberDevice) {
-        TrustedSessionCache.store(user, backendUrlController.text);
       }
       widget.onLogin(user);
       return;
@@ -1044,9 +1032,6 @@ class _LoginPageState extends State<LoginPage>
             onForgotPassword: _showPasswordHelp,
             onInvigilatorSignup: () => _showAccessRequest('Invigilator'),
             onAdminRequest: () => _showAccessRequest('Admin'),
-            rememberDevice: rememberDevice,
-            onRememberDeviceChanged: (value) =>
-                setState(() => rememberDevice = value),
           );
 
           return Stack(
@@ -1226,8 +1211,6 @@ class _LoginGlassPanel extends StatelessWidget {
     required this.onForgotPassword,
     required this.onInvigilatorSignup,
     required this.onAdminRequest,
-    required this.rememberDevice,
-    required this.onRememberDeviceChanged,
     this.error,
     this.sessionMessage,
   });
@@ -1250,8 +1233,6 @@ class _LoginGlassPanel extends StatelessWidget {
   final VoidCallback onForgotPassword;
   final VoidCallback onInvigilatorSignup;
   final VoidCallback onAdminRequest;
-  final bool rememberDevice;
-  final ValueChanged<bool> onRememberDeviceChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1339,7 +1320,7 @@ class _LoginGlassPanel extends StatelessWidget {
             ),
           ),
           CheckboxListTile(
-            value: rememberDevice,
+            value: true,
             dense: true,
             visualDensity: VisualDensity.compact,
             contentPadding: EdgeInsets.zero,
@@ -1348,12 +1329,10 @@ class _LoginGlassPanel extends StatelessWidget {
               borderRadius: BorderRadius.circular(5),
             ),
             title: const Text(
-              'Remember this device during this session',
+              'Password and OTP required for every sign-in',
               style: TextStyle(color: AppColors.soft, fontSize: 13),
             ),
-            onChanged: busy
-                ? null
-                : (value) => onRememberDeviceChanged(value ?? false),
+            onChanged: null,
           ),
           const SizedBox(height: 24),
           _PremiumActionButton(
@@ -4165,9 +4144,16 @@ class StudentsPage extends StatelessWidget {
 }
 
 class EvaluationPage extends StatelessWidget {
-  const EvaluationPage({required this.logs, super.key});
+  const EvaluationPage({
+    required this.logs,
+    required this.onResetMetrics,
+    required this.onlineMode,
+    super.key,
+  });
 
   final List<VerificationRecord> logs;
+  final Future<void> Function() onResetMetrics;
+  final bool onlineMode;
 
   @override
   Widget build(BuildContext context) {
@@ -4192,6 +4178,19 @@ class EvaluationPage extends StatelessWidget {
             title: 'Evaluation Metrics',
             subtitle: 'Metrics based on the current verification records.',
           ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: logs.isEmpty
+                  ? null
+                  : () => _confirmResetMetrics(context),
+              icon: const Icon(Icons.restart_alt_outlined),
+              label: Text(
+                onlineMode ? 'Reset shared metrics' : 'Reset local metrics',
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
           GridView.count(
             crossAxisCount: MediaQuery.sizeOf(context).width >= 720 ? 3 : 1,
             crossAxisSpacing: 14,
@@ -4220,6 +4219,44 @@ class EvaluationPage extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _confirmResetMetrics(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Reset evaluation metrics?'),
+        content: Text(
+          onlineMode
+              ? 'This will clear shared verification logs used for the evaluation metrics. Student records will not be deleted.'
+              : 'This will clear local verification logs used for the evaluation metrics. Student records will not be deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Reset metrics'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await onResetMetrics();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Evaluation metrics have been reset.')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not reset metrics: $error')),
+      );
+    }
   }
 }
 
@@ -7958,6 +7995,20 @@ class ExamVerifyStore {
     );
   }
 
+  Future<void> replaceStudents(List<StudentRecord> students) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('students');
+      for (final student in students) {
+        await txn.insert(
+          'students',
+          student.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
   Future<void> deleteStudent(StudentRecord student) async {
     final db = await database;
     final hash =
@@ -8018,6 +8069,11 @@ class ExamVerifyStore {
       logHash: auditChecksum(record, previousHash),
     );
     await db.insert('verification_logs', signedRecord.toMap());
+  }
+
+  Future<void> clearLogs() async {
+    final db = await database;
+    await db.delete('verification_logs');
   }
 }
 
@@ -8653,6 +8709,11 @@ class OnlineBackendClient {
             AuthService.hashIdentifier(record.studentNumber),
       },
     });
+  }
+
+  Future<int> clearVerificationLogs() async {
+    final response = await _deleteJson('/verification/logs');
+    return (response['deleted'] as num?)?.toInt() ?? 0;
   }
 
   Future<void> submitAccessRequest(AdminAccessRequestDraft request) async {
