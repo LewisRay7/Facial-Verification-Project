@@ -59,6 +59,18 @@ def clear_verification_logs(
     db: Annotated[Session, Depends(get_db)],
     actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
 ) -> dict:
+    return _clear_verification_logs(db, actor)
+
+
+@router.post("/logs/reset")
+def reset_verification_logs(
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    return _clear_verification_logs(db, actor)
+
+
+def _clear_verification_logs(db: Session, actor: User) -> dict:
     deleted_count = db.query(VerificationLog).count()
     db.query(VerificationLog).delete(synchronize_session=False)
     log_event(

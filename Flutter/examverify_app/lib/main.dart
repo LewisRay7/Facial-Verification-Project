@@ -5415,6 +5415,8 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
     return switch (mode) {
       BiometricScanMode.enrollment when Platform.isWindows => [
         center,
+        left,
+        right,
         desktopBlink,
       ],
       BiometricScanMode.enrollment => [center, left, right, up, blink],
@@ -8712,7 +8714,16 @@ class OnlineBackendClient {
   }
 
   Future<int> clearVerificationLogs() async {
-    final response = await _deleteJson('/verification/logs');
+    Map<String, dynamic> response;
+    try {
+      response = await _deleteJson('/verification/logs');
+    } catch (error) {
+      final lower = error.toString().toLowerCase();
+      if (!lower.contains('method not allowed') && !lower.contains('405')) {
+        rethrow;
+      }
+      response = await _postJson('/verification/logs/reset', {});
+    }
     return (response['deleted'] as num?)?.toInt() ?? 0;
   }
 
