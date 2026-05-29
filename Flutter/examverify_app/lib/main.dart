@@ -4021,7 +4021,7 @@ class _KioskStatusPanel extends StatelessWidget {
   }
 }
 
-class StudentsPage extends StatelessWidget {
+class StudentsPage extends StatefulWidget {
   const StudentsPage({
     required this.students,
     required this.onToggleEligibility,
@@ -4034,7 +4034,51 @@ class StudentsPage extends StatelessWidget {
   final Future<void> Function(StudentRecord student) onDeleteStudent;
 
   @override
+  State<StudentsPage> createState() => _StudentsPageState();
+}
+
+class _StudentsPageState extends State<StudentsPage> {
+  final searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  String get normalizedQuery => _normalizeStudentSearch(searchController.text);
+
+  List<StudentRecord> get filteredStudents {
+    final query = normalizedQuery;
+    if (query.isEmpty) return widget.students;
+    return [
+      for (final student in widget.students)
+        if (_studentMatchesQuery(student, query)) student,
+    ];
+  }
+
+  static String _normalizeStudentSearch(String value) {
+    return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+  }
+
+  static bool _studentMatchesQuery(StudentRecord student, String query) {
+    final searchable = _normalizeStudentSearch(
+      [
+        student.fullName,
+        student.studentNumber,
+        student.program,
+        student.note,
+        student.studentNumberHash ?? '',
+        AuthService.maskIdentifier(student.studentNumber),
+      ].join(' '),
+    );
+    return searchable.contains(query);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final visibleStudents = filteredStudents;
+    final searchActive = normalizedQuery.isNotEmpty;
     return AppScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4049,10 +4093,44 @@ class StudentsPage extends StatelessWidget {
             subtitle:
                 'Records are stored locally and remain available after closing the app.',
           ),
-          if (students.isEmpty)
+          if (widget.students.isNotEmpty) ...[
+            TextField(
+              controller: searchController,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                labelText: 'Search student name or ID',
+                hintText: 'Example: Faith Machuta or 2410470',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear search',
+                        onPressed: () {
+                          searchController.clear();
+                          setState(() {});
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              searchActive
+                  ? '${visibleStudents.length} matching student(s)'
+                  : '${visibleStudents.length} registered student(s)',
+              style: const TextStyle(color: AppColors.muted),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (widget.students.isEmpty)
             const EmptyState(message: 'No students registered yet.')
+          else if (visibleStudents.isEmpty)
+            EmptyState(
+              message:
+                  'No student matched "${searchController.text.trim()}". Check the spelling or student ID.',
+            )
           else
-            for (final student in students)
+            for (final student in visibleStudents)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: PanelCard(
@@ -4071,7 +4149,7 @@ class StudentsPage extends StatelessWidget {
                       ),
                       IconButton(
                         tooltip: 'Toggle eligibility',
-                        onPressed: () => onToggleEligibility(student),
+                        onPressed: () => widget.onToggleEligibility(student),
                         icon: const Icon(Icons.swap_horiz),
                       ),
                       IconButton(
@@ -4115,7 +4193,7 @@ class StudentsPage extends StatelessWidget {
     );
     if (confirmed != true || !context.mounted) return;
     try {
-      await onDeleteStudent(student);
+      await widget.onDeleteStudent(student);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${student.fullName} has been deleted.')),
