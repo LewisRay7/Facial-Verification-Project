@@ -4099,7 +4099,6 @@ class _StudentsPageState extends State<StudentsPage> {
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 labelText: 'Search student name or ID',
-                hintText: 'Example: Faith Machuta or 2410470',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: searchController.text.isEmpty
                     ? null
@@ -5038,7 +5037,10 @@ class StudentInfoPane extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            _StudentInfoLine(label: 'Student ID', value: student.studentNumber),
+            _StudentInfoLine(
+              label: 'Student ID',
+              value: AuthService.maskIdentifier(student.studentNumber),
+            ),
             _StudentInfoLine(
               label: 'Program',
               value: student.program.isEmpty
