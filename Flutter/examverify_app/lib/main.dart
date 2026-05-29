@@ -3011,7 +3011,7 @@ class _VerifyPageState extends State<VerifyPage> {
                   ),
                   const SizedBox(height: 16),
                   if (selectedStudent != null)
-                    StudentSummary(student: selectedStudent!),
+                    StudentInfoPane(student: selectedStudent!),
                   const SizedBox(height: 18),
                   ImageCapturePanel(
                     title: 'Live Verification Photo',
@@ -3166,13 +3166,6 @@ class _VerifyPageState extends State<VerifyPage> {
       final status = verified
           ? VerificationStatus.verified
           : VerificationStatus.notVerified;
-      final distanceSummary = ranked
-          .take(3)
-          .map(
-            (match) =>
-                '${match.key.fullName}: ${match.value.toStringAsFixed(3)}',
-          )
-          .join(' | ');
       await widget.onVerificationSaved(
         VerificationRecord(
           time: DateTime.now(),
@@ -3191,12 +3184,12 @@ class _VerifyPageState extends State<VerifyPage> {
         resultStatus = status;
         resultScore = score;
         resultMessage = verified
-            ? 'Verified ${student.fullName} with ${FaceEngine.signatureBackend} score ${score.toStringAsFixed(3)}. Distances: $distanceSummary'
+            ? 'Verified ${student.fullName}. Student ID ${student.studentNumber}.'
             : !selectedIsBest
-            ? 'Not verified: the live face is closer to another stored student. Distances: $distanceSummary'
+            ? 'Not verified: the live face does not match the selected student.'
             : !selectedHasGap
-            ? 'Not verified: the selected student is not clearly separated from the next closest profile. Distances: $distanceSummary'
-            : 'Not verified. ${FaceEngine.signatureBackend} score ${score.toStringAsFixed(3)} or eligibility failed. Distances: $distanceSummary';
+            ? 'Not verified: identity confidence is not unique enough. Use the student record for manual confirmation.'
+            : 'Not verified. The biometric score or eligibility check failed.';
       });
       await ExamVerifyFeedback.playVerificationTone(status);
     } catch (error) {
@@ -3326,7 +3319,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
                     for (final student in widget.students.take(5))
                       Padding(
                         padding: const EdgeInsets.only(bottom: 10),
-                        child: StudentSummary(student: student),
+                        child: StudentInfoPane(student: student),
                       ),
                   ],
                 ],
@@ -3440,13 +3433,6 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           hasGap &&
           bestStudent.eligible;
       final identifiedStudent = verified ? bestStudent : null;
-      final distanceSummary = ranked
-          .take(3)
-          .map(
-            (match) =>
-                '${match.key.fullName}: ${match.value.toStringAsFixed(3)}',
-          )
-          .join(' | ');
       await widget.onVerificationSaved(
         VerificationRecord(
           time: DateTime.now(),
@@ -3465,12 +3451,12 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
       final matchedName = identifiedStudent?.fullName ?? 'Student';
       final matchedNumber = identifiedStudent?.studentNumber ?? 'UNKNOWN';
       final message = verified
-          ? 'Matched $matchedName ($matchedNumber) with ${FaceEngine.signatureBackend} score ${bestScore.toStringAsFixed(3)}. Distances: $distanceSummary'
+          ? 'Verified $matchedName. Student ID $matchedNumber.'
           : ranked.isEmpty
           ? 'No compatible MobileFaceNet profiles found. Sync or enroll students with the mobile scanner.'
           : !hasGap
-          ? 'Unauthorized: the scan is too similar to more than one stored profile. Distances: $distanceSummary'
-          : 'Unauthorized: no database-wide match reached the identity confidence requirement. Distances: $distanceSummary';
+          ? 'Unauthorized: identity confidence is not unique enough. Use manual student record confirmation.'
+          : 'Unauthorized: no trusted student profile matched this scan.';
       if (mounted) {
         setState(() {
           resultStudent = identifiedStudent;
@@ -4075,7 +4061,7 @@ class StudentsPage extends StatelessWidget {
                       : AppColors.red.withValues(alpha: 0.35),
                   child: Row(
                     children: [
-                      Expanded(child: StudentSummary(student: student)),
+                      Expanded(child: StudentInfoPane(student: student)),
                       const SizedBox(width: 12),
                       StatusPill(
                         label: student.eligible ? 'ELIGIBLE' : 'BLOCKED',
@@ -4932,6 +4918,114 @@ class NavButton extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class StudentInfoPane extends StatelessWidget {
+  const StudentInfoPane({required this.student, super.key});
+
+  final StudentRecord student;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 420;
+        final portrait = ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            width: compact ? double.infinity : 92,
+            height: compact ? 180 : 104,
+            decoration: BoxDecoration(
+              color: const Color(0xFF071327),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: student.photoPath.isEmpty
+                ? const Icon(Icons.badge_outlined, color: AppColors.muted)
+                : _StoredPortrait(path: student.photoPath),
+          ),
+        );
+        final details = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              student.fullName,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _StudentInfoLine(label: 'Student ID', value: student.studentNumber),
+            _StudentInfoLine(
+              label: 'Program',
+              value: student.program.isEmpty
+                  ? 'Program not recorded'
+                  : student.program,
+            ),
+            _StudentInfoLine(
+              label: 'Eligibility',
+              value: student.eligible ? 'Eligible' : 'Blocked',
+              valueColor: student.eligible ? AppColors.green : AppColors.red,
+            ),
+            if (student.note.isNotEmpty)
+              _StudentInfoLine(label: 'Note', value: student.note),
+          ],
+        );
+        if (compact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [portrait, const SizedBox(height: 12), details],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            portrait,
+            const SizedBox(width: 14),
+            Expanded(child: details),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _StudentInfoLine extends StatelessWidget {
+  const _StudentInfoLine({
+    required this.label,
+    required this.value,
+    this.valueColor,
+  });
+
+  final String label;
+  final String value;
+  final Color? valueColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: RichText(
+        text: TextSpan(
+          style: const TextStyle(color: AppColors.muted, fontSize: 12),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            TextSpan(
+              text: value,
+              style: TextStyle(
+                color: valueColor ?? AppColors.soft,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ),
       ),
     );
