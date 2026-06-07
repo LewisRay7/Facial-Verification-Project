@@ -9,6 +9,8 @@ services:
         value: production
       - key: JWT_SECRET
         generateValue: true
+      - key: DATA_ENCRYPTION_KEY
+        generateValue: true
       - key: DATABASE_URL
         sync: false
       - key: SUPER_ADMIN_USERNAME

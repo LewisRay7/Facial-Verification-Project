@@ -45,6 +45,21 @@ The selected-student Verify flow is also database-aware. Selecting John and scan
 
 The desktop Auto Identify kiosk keeps the camera running for exam-room entry, but it does not recognize every frame. It follows this flow: Idle -> Face detected -> Liveness check -> Identifying -> Verified/Rejected -> Cooldown -> Idle. It processes only when one face is present, quality is at least 70%, the face is centered and stable, and the liveness check passes. If multiple faces enter the frame, crowd safety pauses recognition until only one student is in front of the camera.
 
+## Biometric Data Protection
+
+Shared cloud student portraits and biometric profiles are encrypted before they
+are written to Neon/PostgreSQL. The FastAPI backend uses AES-256-GCM authenticated
+encryption, stores a SHA-256 portrait integrity value inside the encrypted
+profile, and decrypts records only after role-based authentication.
+
+Production deployments must define a dedicated `DATA_ENCRYPTION_KEY`. Keep this
+secret separate from the database and JWT secrets and back it up securely.
+Losing it makes encrypted biometric records unrecoverable.
+
+Local mobile and desktop caches remain available for offline verification and
+are protected by each operating system's application/user storage boundary.
+Do not copy the application data directory to untrusted devices.
+
 ## Setup
 
 Install Python 3.10 or 3.11 first. During installation, tick "Add Python to PATH".

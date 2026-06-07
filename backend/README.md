@@ -23,8 +23,14 @@ python -m venv .venv
 $env:SUPER_ADMIN_EMAIL="you@example.com"
 $env:SUPER_ADMIN_PASSWORD="Admin@12345"
 $env:JWT_SECRET="replace-with-a-long-secret"
+$env:DATA_ENCRYPTION_KEY="replace-with-a-separate-long-random-secret"
 .venv\Scripts\uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+`DATA_ENCRYPTION_KEY` protects synchronized student portraits and biometric
+profiles with AES-256-GCM before they are written to Neon/PostgreSQL. Keep it
+separate from `DATABASE_URL` and `JWT_SECRET`, and back it up securely. Losing
+this key makes encrypted biometric records unrecoverable.
 
 ## Render
 

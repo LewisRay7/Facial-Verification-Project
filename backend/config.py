@@ -10,6 +10,7 @@ class Settings:
     environment: str = os.getenv("EXAMVERIFY_ENV", "development")
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./examverify_cloud.db")
     jwt_secret: str = os.getenv("JWT_SECRET", "change-this-before-deploying")
+    data_encryption_key: str = os.getenv("DATA_ENCRYPTION_KEY", "")
     jwt_issuer: str = os.getenv("JWT_ISSUER", "examverify")
     jwt_minutes: int = int(os.getenv("JWT_MINUTES", "60"))
     otp_ttl_seconds: int = int(os.getenv("OTP_TTL_SECONDS", "600"))
