@@ -5452,6 +5452,7 @@ class FaceSignal {
     required this.rightEyeOpen,
     required this.poseReliable,
     required this.message,
+    this.landmarkPaths = const [],
   });
 
   final int faceCount;
@@ -5463,6 +5464,7 @@ class FaceSignal {
   final double rightEyeOpen;
   final bool poseReliable;
   final String message;
+  final List<List<Offset>> landmarkPaths;
 
   bool get facePresent => faceCount == 1;
   bool get eyesClosed => ((leftEyeOpen + rightEyeOpen) / 2) < 0.46;
@@ -6774,7 +6776,47 @@ class _BiometricScannerPainter extends CustomPainter {
       false,
       arcPaint,
     );
+    _drawTrackedLandmarks(canvas, size);
     _drawGuidance(canvas, scanRect);
+  }
+
+  void _drawTrackedLandmarks(Canvas canvas, Size size) {
+    final paths = signal?.landmarkPaths ?? const <List<Offset>>[];
+    if (paths.isEmpty || signal?.poseReliable != true) return;
+
+    final linePaint = Paint()
+      ..color = AppColors.green.withValues(alpha: 0.82)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = desktop ? 1.5 : 1.8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final glowPaint = Paint()
+      ..color = AppColors.cyan.withValues(alpha: 0.20)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = desktop ? 4.5 : 5.0
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+    final pointPaint = Paint()
+      ..color = AppColors.cyan.withValues(alpha: 0.95)
+      ..style = PaintingStyle.fill;
+
+    for (final points in paths) {
+      if (points.length < 2) continue;
+      final path = Path();
+      for (var index = 0; index < points.length; index++) {
+        final point = Offset(
+          points[index].dx.clamp(0.0, 1.0) * size.width,
+          points[index].dy.clamp(0.0, 1.0) * size.height,
+        );
+        if (index == 0) {
+          path.moveTo(point.dx, point.dy);
+        } else {
+          path.lineTo(point.dx, point.dy);
+        }
+        canvas.drawCircle(point, desktop ? 1.7 : 2.0, pointPaint);
+      }
+      canvas.drawPath(path, glowPaint);
+      canvas.drawPath(path, linePaint);
+    }
   }
 
   void _drawGuidance(Canvas canvas, Rect scanRect) {
@@ -8403,6 +8445,7 @@ class FaceEngine {
           (poseScore * 0.24) +
           (eyeScore * 0.20) +
           (geometryScore * 0.34);
+      final decoded = imglib.decodeImage(await imageFile.readAsBytes());
       return FaceSignal(
         faceCount: 1,
         quality: quality.clamp(0.0, 1.0),
@@ -8412,6 +8455,9 @@ class FaceEngine {
         leftEyeOpen: leftEye,
         rightEyeOpen: rightEye,
         poseReliable: true,
+        landmarkPaths: decoded == null
+            ? const []
+            : _mobileLandmarkPaths(face, decoded.width, decoded.height),
         message: 'Face mesh and liveness signal locked.',
       );
     } finally {
@@ -8618,6 +8664,45 @@ class FaceEngine {
     final contourScore = (contourPoints / 110).clamp(0.0, 1.0);
     final landmarkScore = (landmarkPoints / 8).clamp(0.0, 1.0);
     return (contourScore * 0.72) + (landmarkScore * 0.28);
+  }
+
+  static List<List<Offset>> _mobileLandmarkPaths(
+    Face face,
+    int imageWidth,
+    int imageHeight,
+  ) {
+    if (imageWidth <= 0 || imageHeight <= 0) return const [];
+    const contourTypes = [
+      FaceContourType.face,
+      FaceContourType.leftEyebrowTop,
+      FaceContourType.leftEyebrowBottom,
+      FaceContourType.rightEyebrowTop,
+      FaceContourType.rightEyebrowBottom,
+      FaceContourType.leftEye,
+      FaceContourType.rightEye,
+      FaceContourType.upperLipTop,
+      FaceContourType.upperLipBottom,
+      FaceContourType.lowerLipTop,
+      FaceContourType.lowerLipBottom,
+      FaceContourType.noseBridge,
+      FaceContourType.noseBottom,
+    ];
+    final paths = <List<Offset>>[];
+    for (final type in contourTypes) {
+      final points = face.contours[type]?.points;
+      if (points == null || points.length < 2) continue;
+      paths.add(
+        points
+            .map(
+              (point) => Offset(
+                (point.x / imageWidth).clamp(0.0, 1.0),
+                (point.y / imageHeight).clamp(0.0, 1.0),
+              ),
+            )
+            .toList(growable: false),
+      );
+    }
+    return paths;
   }
 
   static List<double> _signatureFromImage(imglib.Image source) {
@@ -9089,6 +9174,23 @@ class PythonFaceBackend {
     final response = await _post('/liveness', {'image_path': imagePath});
     final faceCount = (response['face_count'] as num?)?.toInt() ?? 0;
     final score = (response['score'] as num?)?.toDouble() ?? 0;
+    final landmarkPaths = <List<Offset>>[];
+    final rawPaths = response['landmark_paths'];
+    if (rawPaths is List) {
+      for (final rawPath in rawPaths) {
+        if (rawPath is! List) continue;
+        final path = <Offset>[];
+        for (final rawPoint in rawPath) {
+          if (rawPoint is! Map) continue;
+          final x = rawPoint['x'];
+          final y = rawPoint['y'];
+          if (x is num && y is num) {
+            path.add(Offset(x.toDouble(), y.toDouble()));
+          }
+        }
+        if (path.length > 1) landmarkPaths.add(path);
+      }
+    }
     return FaceSignal(
       faceCount: faceCount,
       quality: score.clamp(0.0, 1.0),
@@ -9098,6 +9200,7 @@ class PythonFaceBackend {
       leftEyeOpen: (response['left_eye_open'] as num?)?.toDouble() ?? 0.5,
       rightEyeOpen: (response['right_eye_open'] as num?)?.toDouble() ?? 0.5,
       poseReliable: response['pose_reliable'] as bool? ?? false,
+      landmarkPaths: landmarkPaths,
       message:
           response['message'] as String? ??
           (faceCount == 1
