@@ -9,25 +9,6 @@ import numpy as np
 
 _desktop_face_mesh = None
 
-_FACE_MESH_PATH_INDEXES = (
-    # Face oval, eyebrows, eyes, nose, and lips. Keeping this compact avoids
-    # sending the full 478-point mesh on every live-camera analysis request.
-    (10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365,
-     379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93,
-     234, 127, 162, 21, 54, 103, 67, 109, 10),
-    (70, 63, 105, 66, 107),
-    (336, 296, 334, 293, 300),
-    (33, 160, 158, 133, 153, 144, 33),
-    (362, 385, 387, 263, 373, 380, 362),
-    (168, 6, 1, 2, 98),
-    (168, 6, 1, 2, 327),
-    (61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291),
-    (61, 78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 291),
-    (10, 168, 6, 1, 2, 152),
-    (234, 93, 132, 58, 172, 152),
-    (454, 323, 361, 288, 397, 152),
-)
-
 try:
     from SRC.liveness import LivenessResult, StaticLivenessAnalyzer
 except ImportError:
@@ -132,8 +113,6 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
                 "left_eye_open": left_eye,
                 "right_eye_open": right_eye,
                 "pose_reliable": True,
-                "landmark_paths": _landmark_paths(points),
-                "landmark_image_aspect_ratio": frame_width / frame_height,
                 "message": "Face landmarks locked.",
             }
     except Exception:
@@ -151,8 +130,6 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
         "left_eye_open": 0.8,
         "right_eye_open": 0.8,
         "pose_reliable": False,
-        "landmark_paths": [],
-        "landmark_image_aspect_ratio": image.shape[1] / image.shape[0],
         "message": "Face candidate found. Waiting for reliable landmarks.",
     }
 
@@ -167,23 +144,8 @@ def _empty_signal(message: str) -> dict[str, object]:
         "left_eye_open": 0.5,
         "right_eye_open": 0.5,
         "pose_reliable": False,
-        "landmark_paths": [],
-        "landmark_image_aspect_ratio": 0.0,
         "message": message,
     }
-
-
-def _landmark_paths(landmarks: list) -> list[list[dict[str, float]]]:
-    return [
-        [
-            {
-                "x": round(float(landmarks[index].x), 5),
-                "y": round(float(landmarks[index].y), 5),
-            }
-            for index in indexes
-        ]
-        for indexes in _FACE_MESH_PATH_INDEXES
-    ]
 
 
 def _eye_openness(landmarks: list, indexes: list[int]) -> float:

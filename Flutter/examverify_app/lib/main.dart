@@ -3641,7 +3641,7 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
   void _startLoop() {
     scanTimer?.cancel();
     scanTimer = Timer.periodic(
-      const Duration(milliseconds: 400),
+      const Duration(milliseconds: 520),
       (_) => _analyzeNextFrame(),
     );
   }
@@ -3664,9 +3664,7 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
     try {
       final image = await active.takePicture();
       frame = File(image.path);
-      final nextSignal = (await FaceEngine.analyzeFaceSignal(
-        frame,
-      )).smoothLandmarks(signal);
+      final nextSignal = await FaceEngine.analyzeFaceSignal(frame);
       if (!mounted) return;
       signal = nextSignal;
       final strongSingleFace =
@@ -3874,9 +3872,6 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
                           signal: signal,
                           challenge: _BiometricChallengeType.centerInitial,
                           desktop: true,
-                          mirrorLandmarks:
-                              active?.description.lensDirection ==
-                              camera.CameraLensDirection.front,
                         ),
                       ),
                     ),
@@ -5457,8 +5452,6 @@ class FaceSignal {
     required this.rightEyeOpen,
     required this.poseReliable,
     required this.message,
-    this.landmarkPaths = const [],
-    this.landmarkImageAspectRatio = 0,
   });
 
   final int faceCount;
@@ -5470,49 +5463,10 @@ class FaceSignal {
   final double rightEyeOpen;
   final bool poseReliable;
   final String message;
-  final List<List<Offset>> landmarkPaths;
-  final double landmarkImageAspectRatio;
 
   bool get facePresent => faceCount == 1;
   bool get eyesClosed => ((leftEyeOpen + rightEyeOpen) / 2) < 0.46;
   bool get eyesOpen => ((leftEyeOpen + rightEyeOpen) / 2) > 0.50;
-
-  FaceSignal smoothLandmarks(FaceSignal? previous, {double alpha = 0.58}) {
-    if (landmarkPaths.isEmpty ||
-        previous == null ||
-        previous.landmarkPaths.length != landmarkPaths.length) {
-      return this;
-    }
-    final smoothed = <List<Offset>>[];
-    for (var pathIndex = 0; pathIndex < landmarkPaths.length; pathIndex++) {
-      final currentPath = landmarkPaths[pathIndex];
-      final previousPath = previous.landmarkPaths[pathIndex];
-      if (currentPath.length != previousPath.length) return this;
-      smoothed.add(
-        List.generate(currentPath.length, (pointIndex) {
-          final current = currentPath[pointIndex];
-          final old = previousPath[pointIndex];
-          return Offset(
-            old.dx + ((current.dx - old.dx) * alpha),
-            old.dy + ((current.dy - old.dy) * alpha),
-          );
-        }, growable: false),
-      );
-    }
-    return FaceSignal(
-      faceCount: faceCount,
-      quality: quality,
-      yaw: yaw,
-      pitch: pitch,
-      roll: roll,
-      leftEyeOpen: leftEyeOpen,
-      rightEyeOpen: rightEyeOpen,
-      poseReliable: poseReliable,
-      message: message,
-      landmarkPaths: smoothed,
-      landmarkImageAspectRatio: landmarkImageAspectRatio,
-    );
-  }
 }
 
 Future<File?> showBiometricScanner(
@@ -5787,8 +5741,8 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
     analysisTimer = Timer.periodic(
       interval ??
           (Platform.isWindows
-              ? const Duration(milliseconds: 400)
-              : const Duration(milliseconds: 650)),
+              ? const Duration(milliseconds: 450)
+              : const Duration(milliseconds: 1250)),
       (_) => _analyzeFrame(),
     );
   }
@@ -5813,9 +5767,7 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
     try {
       final image = await active.takePicture();
       final frame = File(image.path);
-      final nextSignal = (await FaceEngine.analyzeFaceSignal(
-        frame,
-      )).smoothLandmarks(signal);
+      final nextSignal = await FaceEngine.analyzeFaceSignal(frame);
       if (!mounted) return;
       final challenge = challenges[challengeIndex];
       final passed = _passesChallenge(challenge, nextSignal);
@@ -6026,11 +5978,11 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
         !completing) {
       _schedulePortraitCapture();
     }
-    if (!mounted) return;
-    if (shouldUpdate) lastUiUpdate = now;
+    if (!shouldUpdate || !mounted) return;
+    lastUiUpdate = now;
     setState(() {
       signal = nextSignal;
-      if (shouldUpdate) message = nextMessage;
+      message = nextMessage;
     });
   }
 
@@ -6219,9 +6171,6 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
                             statusProgress: progress,
                             signal: signal,
                             challenge: current.type,
-                            mirrorLandmarks:
-                                selectedLens ==
-                                camera.CameraLensDirection.front,
                           ),
                         ),
                       ),
@@ -6476,22 +6425,20 @@ class _DesktopBiometricScannerScaffold extends StatelessWidget {
                                           RepaintBoundary(
                                             child: AnimatedBuilder(
                                               animation: animation,
-                                              builder: (context, _) => CustomPaint(
-                                                painter: _BiometricScannerPainter(
-                                                  progress: animation.value,
-                                                  statusProgress: progress,
-                                                  signal: signal,
-                                                  challenge: challenge.type,
-                                                  desktop: true,
-                                                  mirrorLandmarks:
-                                                      active
-                                                          ?.description
-                                                          .lensDirection ==
-                                                      camera
-                                                          .CameraLensDirection
-                                                          .front,
-                                                ),
-                                              ),
+                                              builder: (context, _) =>
+                                                  CustomPaint(
+                                                    painter:
+                                                        _BiometricScannerPainter(
+                                                          progress:
+                                                              animation.value,
+                                                          statusProgress:
+                                                              progress,
+                                                          signal: signal,
+                                                          challenge:
+                                                              challenge.type,
+                                                          desktop: true,
+                                                        ),
+                                                  ),
                                             ),
                                           ),
                                       ],
@@ -6738,7 +6685,6 @@ class _BiometricScannerPainter extends CustomPainter {
     required this.signal,
     required this.challenge,
     this.desktop = false,
-    this.mirrorLandmarks = false,
   });
 
   final double progress;
@@ -6746,7 +6692,6 @@ class _BiometricScannerPainter extends CustomPainter {
   final FaceSignal? signal;
   final _BiometricChallengeType challenge;
   final bool desktop;
-  final bool mirrorLandmarks;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -6829,64 +6774,7 @@ class _BiometricScannerPainter extends CustomPainter {
       false,
       arcPaint,
     );
-    _drawTrackedLandmarks(canvas, size);
     _drawGuidance(canvas, scanRect);
-  }
-
-  void _drawTrackedLandmarks(Canvas canvas, Size size) {
-    final paths = signal?.landmarkPaths ?? const <List<Offset>>[];
-    if (paths.isEmpty || signal?.poseReliable != true) return;
-
-    final linePaint = Paint()
-      ..color = AppColors.green.withValues(alpha: 0.82)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = desktop ? 1.5 : 1.8
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-    final glowPaint = Paint()
-      ..color = AppColors.cyan.withValues(alpha: 0.20)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = desktop ? 4.5 : 5.0
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-    final pointPaint = Paint()
-      ..color = AppColors.cyan.withValues(alpha: 0.95)
-      ..style = PaintingStyle.fill;
-
-    for (final points in paths) {
-      if (points.length < 2) continue;
-      final path = Path();
-      for (var index = 0; index < points.length; index++) {
-        final point = _mapLandmark(points[index], size);
-        if (index == 0) {
-          path.moveTo(point.dx, point.dy);
-        } else {
-          path.lineTo(point.dx, point.dy);
-        }
-        canvas.drawCircle(point, desktop ? 1.7 : 2.0, pointPaint);
-      }
-      canvas.drawPath(path, glowPaint);
-      canvas.drawPath(path, linePaint);
-    }
-  }
-
-  Offset _mapLandmark(Offset point, Size size) {
-    final normalizedX = mirrorLandmarks ? 1 - point.dx : point.dx;
-    final sourceAspect = signal?.landmarkImageAspectRatio ?? 0;
-    if (sourceAspect <= 0) {
-      return Offset(
-        normalizedX.clamp(0.0, 1.0) * size.width,
-        point.dy.clamp(0.0, 1.0) * size.height,
-      );
-    }
-    final scale = math.max(size.width / sourceAspect, size.height);
-    final renderedWidth = sourceAspect * scale;
-    final renderedHeight = scale;
-    final left = (size.width - renderedWidth) / 2;
-    final top = (size.height - renderedHeight) / 2;
-    return Offset(
-      left + (normalizedX.clamp(0.0, 1.0) * renderedWidth),
-      top + (point.dy.clamp(0.0, 1.0) * renderedHeight),
-    );
   }
 
   void _drawGuidance(Canvas canvas, Rect scanRect) {
@@ -6997,8 +6885,7 @@ class _BiometricScannerPainter extends CustomPainter {
         oldDelegate.statusProgress != statusProgress ||
         oldDelegate.signal != signal ||
         oldDelegate.challenge != challenge ||
-        oldDelegate.desktop != desktop ||
-        oldDelegate.mirrorLandmarks != mirrorLandmarks;
+        oldDelegate.desktop != desktop;
   }
 }
 
@@ -8516,7 +8403,6 @@ class FaceEngine {
           (poseScore * 0.24) +
           (eyeScore * 0.20) +
           (geometryScore * 0.34);
-      final decoded = imglib.decodeImage(await imageFile.readAsBytes());
       return FaceSignal(
         faceCount: 1,
         quality: quality.clamp(0.0, 1.0),
@@ -8526,12 +8412,6 @@ class FaceEngine {
         leftEyeOpen: leftEye,
         rightEyeOpen: rightEye,
         poseReliable: true,
-        landmarkPaths: decoded == null
-            ? const []
-            : _mobileLandmarkPaths(face, decoded.width, decoded.height),
-        landmarkImageAspectRatio: decoded == null
-            ? 0
-            : decoded.width / decoded.height,
         message: 'Face mesh and liveness signal locked.',
       );
     } finally {
@@ -8738,45 +8618,6 @@ class FaceEngine {
     final contourScore = (contourPoints / 110).clamp(0.0, 1.0);
     final landmarkScore = (landmarkPoints / 8).clamp(0.0, 1.0);
     return (contourScore * 0.72) + (landmarkScore * 0.28);
-  }
-
-  static List<List<Offset>> _mobileLandmarkPaths(
-    Face face,
-    int imageWidth,
-    int imageHeight,
-  ) {
-    if (imageWidth <= 0 || imageHeight <= 0) return const [];
-    const contourTypes = [
-      FaceContourType.face,
-      FaceContourType.leftEyebrowTop,
-      FaceContourType.leftEyebrowBottom,
-      FaceContourType.rightEyebrowTop,
-      FaceContourType.rightEyebrowBottom,
-      FaceContourType.leftEye,
-      FaceContourType.rightEye,
-      FaceContourType.upperLipTop,
-      FaceContourType.upperLipBottom,
-      FaceContourType.lowerLipTop,
-      FaceContourType.lowerLipBottom,
-      FaceContourType.noseBridge,
-      FaceContourType.noseBottom,
-    ];
-    final paths = <List<Offset>>[];
-    for (final type in contourTypes) {
-      final points = face.contours[type]?.points;
-      if (points == null || points.length < 2) continue;
-      paths.add(
-        points
-            .map(
-              (point) => Offset(
-                (point.x / imageWidth).clamp(0.0, 1.0),
-                (point.y / imageHeight).clamp(0.0, 1.0),
-              ),
-            )
-            .toList(growable: false),
-      );
-    }
-    return paths;
   }
 
   static List<double> _signatureFromImage(imglib.Image source) {
@@ -9248,23 +9089,6 @@ class PythonFaceBackend {
     final response = await _post('/liveness', {'image_path': imagePath});
     final faceCount = (response['face_count'] as num?)?.toInt() ?? 0;
     final score = (response['score'] as num?)?.toDouble() ?? 0;
-    final landmarkPaths = <List<Offset>>[];
-    final rawPaths = response['landmark_paths'];
-    if (rawPaths is List) {
-      for (final rawPath in rawPaths) {
-        if (rawPath is! List) continue;
-        final path = <Offset>[];
-        for (final rawPoint in rawPath) {
-          if (rawPoint is! Map) continue;
-          final x = rawPoint['x'];
-          final y = rawPoint['y'];
-          if (x is num && y is num) {
-            path.add(Offset(x.toDouble(), y.toDouble()));
-          }
-        }
-        if (path.length > 1) landmarkPaths.add(path);
-      }
-    }
     return FaceSignal(
       faceCount: faceCount,
       quality: score.clamp(0.0, 1.0),
@@ -9274,9 +9098,6 @@ class PythonFaceBackend {
       leftEyeOpen: (response['left_eye_open'] as num?)?.toDouble() ?? 0.5,
       rightEyeOpen: (response['right_eye_open'] as num?)?.toDouble() ?? 0.5,
       poseReliable: response['pose_reliable'] as bool? ?? false,
-      landmarkPaths: landmarkPaths,
-      landmarkImageAspectRatio:
-          (response['landmark_image_aspect_ratio'] as num?)?.toDouble() ?? 0,
       message:
           response['message'] as String? ??
           (faceCount == 1
