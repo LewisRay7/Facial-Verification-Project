@@ -121,6 +121,43 @@ def init_db() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exam_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_code TEXT NOT NULL,
+                course_name TEXT NOT NULL,
+                program TEXT,
+                level TEXT,
+                exam_date TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                venue TEXT,
+                status TEXT NOT NULL DEFAULT 'scheduled',
+                created_by TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exam_session_students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exam_session_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                eligibility_type TEXT NOT NULL DEFAULT 'regular',
+                eligibility_status TEXT NOT NULL DEFAULT 'eligible',
+                attendance_status TEXT NOT NULL DEFAULT 'not_verified',
+                verified_at TEXT,
+                verified_by TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                UNIQUE(exam_session_id, student_id)
+            )
+            """
+        )
         _ensure_student_columns(connection)
         _ensure_log_columns(connection)
         _ensure_user_columns(connection)
@@ -142,6 +179,8 @@ def _ensure_student_columns(connection: sqlite3.Connection) -> None:
         "exam_eligible": "ALTER TABLE students ADD COLUMN exam_eligible INTEGER NOT NULL DEFAULT 1",
         "eligibility_note": "ALTER TABLE students ADD COLUMN eligibility_note TEXT",
         "student_number_hash": "ALTER TABLE students ADD COLUMN student_number_hash TEXT",
+        "level": "ALTER TABLE students ADD COLUMN level TEXT",
+        "student_status": "ALTER TABLE students ADD COLUMN student_status TEXT NOT NULL DEFAULT 'active'",
     }
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
@@ -914,6 +953,158 @@ def clear_verification_logs() -> int:
         deleted = connection.execute("DELETE FROM verification_logs").rowcount
         connection.commit()
         return int(deleted)
+
+
+def create_exam_session(
+    course_code: str,
+    course_name: str,
+    program: str,
+    level: str,
+    exam_date: str,
+    venue: str,
+    created_by: str = "admin",
+) -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(get_connection()) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO exam_sessions (
+                course_code, course_name, program, level, exam_date, venue,
+                status, created_by, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)
+            """,
+            (course_code, course_name, program, level, exam_date, venue, created_by, now, now),
+        )
+        connection.commit()
+        return int(cursor.lastrowid)
+
+
+def list_exam_sessions() -> list[dict[str, Any]]:
+    with closing(get_connection()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM exam_sessions ORDER BY exam_date DESC, course_code"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def active_exam_session() -> dict[str, Any] | None:
+    with closing(get_connection()) as connection:
+        row = connection.execute(
+            "SELECT * FROM exam_sessions WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def set_exam_session_status(session_id: int, status: str) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            "UPDATE exam_sessions SET status = ?, updated_at = ? WHERE id = ?",
+            (status, datetime.now().isoformat(timespec="seconds"), session_id),
+        )
+        connection.commit()
+
+
+def add_exam_session_student(
+    session_id: int,
+    student_id: int,
+    eligibility_type: str = "regular",
+    eligibility_status: str = "eligible",
+    notes: str = "",
+) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            INSERT INTO exam_session_students (
+                exam_session_id, student_id, eligibility_type, eligibility_status,
+                attendance_status, notes, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'not_verified', ?, ?, ?)
+            ON CONFLICT(exam_session_id, student_id) DO UPDATE SET
+                eligibility_type = excluded.eligibility_type,
+                eligibility_status = excluded.eligibility_status,
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """,
+            (session_id, student_id, eligibility_type, eligibility_status, notes, now, now),
+        )
+        connection.commit()
+
+
+def list_exam_session_students(session_id: int) -> list[dict[str, Any]]:
+    with closing(get_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT ess.*, students.student_number, students.full_name, students.program
+            FROM exam_session_students ess
+            JOIN students ON students.id = ess.student_id
+            WHERE ess.exam_session_id = ?
+            ORDER BY students.full_name COLLATE NOCASE
+            """,
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def evaluate_local_exam_entry(
+    session_id: int | None,
+    student_id: int | None,
+    liveness_passed: bool,
+    identity_matched: bool,
+) -> dict[str, Any]:
+    if session_id is None:
+        return {"decision": "DENIED", "reason": "No active exam session selected."}
+    if not liveness_passed:
+        return {"decision": "DENIED", "reason": "Liveness failed."}
+    if not identity_matched or student_id is None:
+        return {"decision": "DENIED", "reason": "Face not recognized."}
+    with closing(get_connection()) as connection:
+        student = connection.execute(
+            "SELECT active, student_status FROM students WHERE id = ?",
+            (student_id,),
+        ).fetchone()
+        if student is None:
+            return {"decision": "DENIED", "reason": "Face not recognized."}
+        if int(student["active"]) != 1 or student["student_status"] != "active":
+            return {"decision": "DENIED", "reason": "Student inactive or suspended."}
+        eligibility = connection.execute(
+            """
+            SELECT * FROM exam_session_students
+            WHERE exam_session_id = ? AND student_id = ?
+            """,
+            (session_id, student_id),
+        ).fetchone()
+        if eligibility is None:
+            return {
+                "decision": "DENIED",
+                "reason": "Student is registered in the system but not eligible for this exam session.",
+            }
+        if eligibility["eligibility_status"] != "eligible":
+            return {"decision": "DENIED", "reason": "Student blocked from this exam session."}
+        if eligibility["attendance_status"] == "verified":
+            return {
+                "decision": "ALREADY_VERIFIED",
+                "reason": f"Student was already verified at {eligibility['verified_at']}.",
+            }
+        connection.execute(
+            """
+            UPDATE exam_session_students
+            SET attendance_status = 'verified', verified_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                datetime.now().isoformat(timespec="seconds"),
+                eligibility["id"],
+            ),
+        )
+        connection.commit()
+        return {
+            "decision": "VERIFIED",
+            "reason": "Identity, liveness, and exam-session eligibility confirmed.",
+            "eligibility_type": eligibility["eligibility_type"],
+        }
 
 
 def dashboard_summary() -> dict[str, int]:

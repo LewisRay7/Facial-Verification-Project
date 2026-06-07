@@ -51,6 +51,8 @@ class Student(Base):
     student_number_mask: Mapped[str] = mapped_column(String(40), index=True)
     full_name: Mapped[str] = mapped_column(String(180), index=True)
     program: Mapped[str] = mapped_column(String(180), default="")
+    level: Mapped[str] = mapped_column(String(60), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     photo_url: Mapped[str] = mapped_column(Text, default="")
     biometric_profile_json: Mapped[str] = mapped_column(Text, default="{}")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -58,6 +60,52 @@ class Student(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     logs: Mapped[list["VerificationLog"]] = relationship(back_populates="student")
+    exam_eligibilities: Mapped[list["ExamSessionStudent"]] = relationship(
+        back_populates="student"
+    )
+
+
+class ExamSession(Base):
+    __tablename__ = "exam_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    course_code: Mapped[str] = mapped_column(String(60), index=True)
+    course_name: Mapped[str] = mapped_column(String(180))
+    program: Mapped[str] = mapped_column(String(180), default="")
+    level: Mapped[str] = mapped_column(String(60), default="")
+    exam_date: Mapped[str] = mapped_column(String(20), index=True)
+    start_time: Mapped[str] = mapped_column(String(20), default="")
+    end_time: Mapped[str] = mapped_column(String(20), default="")
+    venue: Mapped[str] = mapped_column(String(180), default="")
+    status: Mapped[str] = mapped_column(String(30), default="scheduled", index=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    eligible_students: Mapped[list["ExamSessionStudent"]] = relationship(
+        back_populates="exam_session", cascade="all, delete-orphan"
+    )
+
+
+class ExamSessionStudent(Base):
+    __tablename__ = "exam_session_students"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exam_session_id: Mapped[int] = mapped_column(
+        ForeignKey("exam_sessions.id"), index=True
+    )
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), index=True)
+    eligibility_type: Mapped[str] = mapped_column(String(30), default="regular")
+    eligibility_status: Mapped[str] = mapped_column(String(30), default="eligible")
+    attendance_status: Mapped[str] = mapped_column(String(30), default="not_verified")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    exam_session: Mapped[ExamSession] = relationship(back_populates="eligible_students")
+    student: Mapped[Student] = relationship(back_populates="exam_eligibilities")
 
 
 class VerificationLog(Base):
@@ -65,12 +113,23 @@ class VerificationLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id"), nullable=True)
+    exam_session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("exam_sessions.id"), nullable=True, index=True
+    )
     student_number_mask: Mapped[str] = mapped_column(String(40), default="")
     full_name: Mapped[str] = mapped_column(String(180), default="")
     program: Mapped[str] = mapped_column(String(180), default="")
     status: Mapped[str] = mapped_column(String(40), index=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     liveness_score: Mapped[float] = mapped_column(Float, default=0.0)
+    decision: Mapped[str] = mapped_column(String(40), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    confidence_gap: Mapped[float] = mapped_column(Float, default=0.0)
+    liveness_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    eligibility_type: Mapped[str] = mapped_column(String(30), default="")
+    verified_by: Mapped[str] = mapped_column(String(80), default="")
+    device_type: Mapped[str] = mapped_column(String(40), default="")
+    venue: Mapped[str] = mapped_column(String(180), default="")
     device_id: Mapped[str] = mapped_column(String(120), default="")
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

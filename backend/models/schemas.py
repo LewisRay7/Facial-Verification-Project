@@ -48,6 +48,8 @@ class StudentSyncIn(BaseModel):
     student_number_mask: str
     full_name: str
     program: str = ""
+    level: str = ""
+    status: Literal["active", "inactive", "suspended"] = "active"
     photo_url: str = ""
     biometric_profile: dict[str, Any] = Field(default_factory=dict)
 
@@ -62,6 +64,59 @@ class VerificationLogIn(BaseModel):
     liveness_score: float = 0.0
     device_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    exam_session_id: int | None = None
+    decision: str = ""
+    reason: str = ""
+    confidence_gap: float = 0.0
+    liveness_passed: bool = False
+    eligibility_type: str = ""
+    device_type: str = ""
+    venue: str = ""
+
+
+class ExamSessionCreate(BaseModel):
+    course_code: str = Field(min_length=2, max_length=60)
+    course_name: str = Field(min_length=2, max_length=180)
+    program: str = ""
+    level: str = ""
+    exam_date: str
+    start_time: str = ""
+    end_time: str = ""
+    venue: str = ""
+
+
+class ExamSessionUpdate(BaseModel):
+    course_code: str | None = None
+    course_name: str | None = None
+    program: str | None = None
+    level: str | None = None
+    exam_date: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    venue: str | None = None
+    status: Literal["scheduled", "active", "completed", "cancelled"] | None = None
+
+
+class EligibleStudentAdd(BaseModel):
+    student_id: int
+    eligibility_type: Literal[
+        "regular", "repeat", "deferred", "supplementary", "manual_override"
+    ] = "regular"
+    eligibility_status: Literal["eligible", "blocked", "completed"] = "eligible"
+    notes: str = ""
+
+
+class ExamEntryEvaluateIn(BaseModel):
+    detected_student_id: int | None = None
+    match_score: float = 1.0
+    confidence_gap: float = 0.0
+    match_threshold: float = 0.30
+    minimum_confidence_gap: float = 0.08
+    liveness_passed: bool = False
+    identity_matched: bool = False
+    device_type: Literal["mobile", "desktop", "web"] = "desktop"
+    admin_override: bool = False
+    override_reason: str = ""
 
 
 class ApiMessage(BaseModel):

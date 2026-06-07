@@ -10,6 +10,7 @@ Dockerized FastAPI backend for the cloud-connected ExamVerify architecture.
 - Super Admin approval workflow
 - Student biometric profile synchronization
 - Verification and audit logs
+- Exam-session eligibility rosters and duplicate-entry prevention
 
 Heavy biometric processing remains on mobile/desktop clients. The cloud stores
 secure metadata, encrypted/signed sync payloads in future phases, and logs.
@@ -31,6 +32,10 @@ $env:DATA_ENCRYPTION_KEY="replace-with-a-separate-long-random-secret"
 profiles with AES-256-GCM before they are written to Neon/PostgreSQL. Keep it
 separate from `DATABASE_URL` and `JWT_SECRET`, and back it up securely. Losing
 this key makes encrypted biometric records unrecoverable.
+
+Exam entry approval uses the selected active exam session rather than program or
+level alone. This supports regular, repeat, deferred, supplementary, and
+administrator-approved students without requiring biometric re-enrollment.
 
 ## Render
 

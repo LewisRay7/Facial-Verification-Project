@@ -16,6 +16,17 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
 
+extension _FirstOrNull<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
+
+  T? firstWhereOrNull(bool Function(T value) test) {
+    for (final value in this) {
+      if (test(value)) return value;
+    }
+    return null;
+  }
+}
+
 void main() {
   runApp(const ExamVerifyApp());
 }
@@ -96,6 +107,8 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
   int selectedIndex = 0;
   List<StudentRecord> students = const [];
   List<VerificationRecord> logs = const [];
+  List<ExamSessionRecord> examSessions = const [];
+  List<ExamEligibilityRecord> examEligibilities = const [];
   bool loading = true;
   AuthUser? authUser;
   DateTime? lastActivity;
@@ -124,6 +137,11 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     NavItem(
       Icons.groups_2_outlined,
       'Students',
+      roles: {'Super Admin', 'Admin'},
+    ),
+    NavItem(
+      Icons.event_available_outlined,
+      'Exam Sessions',
       roles: {'Super Admin', 'Admin'},
     ),
     NavItem(
@@ -216,6 +234,8 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
   Future<void> _loadData() async {
     List<StudentRecord> loadedStudents = const [];
     List<VerificationRecord> loadedLogs = const [];
+    List<ExamSessionRecord> loadedSessions = const [];
+    List<ExamEligibilityRecord> loadedEligibilities = const [];
     if (!widget.skipPersistence) {
       try {
         final client = onlineClient;
@@ -246,9 +266,18 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
           );
           await store.replaceStudents(loadedStudents);
           loadedLogs = await client.listLogs();
+          loadedSessions = await client.listExamSessions();
+          await store.replaceExamSessions(loadedSessions);
+          for (final session in loadedSessions) {
+            final rows = await client.listExamEligibilities(session.id);
+            loadedEligibilities.addAll(rows);
+          }
+          await store.replaceExamEligibilities(loadedEligibilities);
         } else {
           loadedStudents = await store.listStudents();
           loadedLogs = await store.listLogs();
+          loadedSessions = await store.listExamSessions();
+          loadedEligibilities = await store.listExamEligibilities();
         }
       } catch (_) {
         // Widget tests run without the Android sqflite plugin. The real app uses
@@ -260,6 +289,8 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     setState(() {
       students = loadedStudents;
       logs = loadedLogs;
+      examSessions = loadedSessions;
+      examEligibilities = loadedEligibilities;
       loading = false;
     });
   }
@@ -302,6 +333,8 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
           AuthService.hashIdentifier(local.studentNumber),
       fullName: remote.fullName,
       program: remote.program,
+      level: remote.level,
+      status: remote.status,
       eligible: remote.eligible,
       note: remote.note.isNotEmpty ? remote.note : local.note,
       photoPath: localPhotoUsable ? local.photoPath : remote.photoPath,
@@ -425,11 +458,15 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       ),
       'Verify' => VerifyPage(
         students: students,
+        examSessions: examSessions,
+        examEligibilities: examEligibilities,
         onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
       ),
       'Auto Identify' => AutoIdentifyPage(
         students: students,
+        examSessions: examSessions,
+        examEligibilities: examEligibilities,
         onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
       ),
@@ -437,6 +474,12 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         students: students,
         onToggleEligibility: _toggleEligibility,
         onDeleteStudent: _deleteStudent,
+      ),
+      'Exam Sessions' => ExamSessionsPage(
+        students: students,
+        sessions: examSessions,
+        client: onlineClient,
+        onChanged: _loadData,
       ),
       'Evaluation' => EvaluationPage(
         logs: logs,
@@ -2944,12 +2987,16 @@ class _RegisterPageState extends State<RegisterPage> {
 class VerifyPage extends StatefulWidget {
   const VerifyPage({
     required this.students,
+    required this.examSessions,
+    required this.examEligibilities,
     required this.onVerificationSaved,
     this.onlineClient,
     super.key,
   });
 
   final List<StudentRecord> students;
+  final List<ExamSessionRecord> examSessions;
+  final List<ExamEligibilityRecord> examEligibilities;
   final Future<void> Function(VerificationRecord record) onVerificationSaved;
   final OnlineBackendClient? onlineClient;
 
@@ -2959,6 +3006,7 @@ class VerifyPage extends StatefulWidget {
 
 class _VerifyPageState extends State<VerifyPage> {
   StudentRecord? selectedStudent;
+  ExamSessionRecord? selectedSession;
   File? livePhoto;
   String? resultMessage;
   VerificationStatus? resultStatus;
@@ -2970,6 +3018,9 @@ class _VerifyPageState extends State<VerifyPage> {
   @override
   Widget build(BuildContext context) {
     selectedStudent ??= widget.students.isEmpty ? null : widget.students.first;
+    selectedSession ??= widget.examSessions
+        .where((row) => row.isActive)
+        .firstOrNull;
 
     return AppScrollView(
       child: Column(
@@ -2987,11 +3038,24 @@ class _VerifyPageState extends State<VerifyPage> {
           ),
           if (widget.students.isEmpty)
             const EmptyState(message: 'Register a student before verification.')
+          else if (widget.examSessions.where((row) => row.isActive).isEmpty)
+            const EmptyState(
+              message: 'Activate an exam session before verifying exam entry.',
+            )
           else
             PanelCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  _ExamSessionSelector(
+                    sessions: widget.examSessions
+                        .where((row) => row.isActive)
+                        .toList(),
+                    selected: selectedSession,
+                    onChanged: (value) =>
+                        setState(() => selectedSession = value),
+                  ),
+                  const SizedBox(height: 16),
                   DropdownButtonFormField<StudentRecord>(
                     initialValue: selectedStudent,
                     decoration: const InputDecoration(
@@ -3047,6 +3111,7 @@ class _VerifyPageState extends State<VerifyPage> {
                       onPressed:
                           verifying ||
                               selectedStudent == null ||
+                              selectedSession == null ||
                               livePhoto == null
                           ? null
                           : _verifySelectedStudent,
@@ -3086,8 +3151,9 @@ class _VerifyPageState extends State<VerifyPage> {
 
   Future<void> _verifySelectedStudent() async {
     final student = selectedStudent;
+    final session = selectedSession;
     final photo = livePhoto;
-    if (student == null || photo == null) return;
+    if (student == null || session == null || photo == null) return;
 
     setState(() {
       verifying = true;
@@ -3163,7 +3229,28 @@ class _VerifyPageState extends State<VerifyPage> {
           selectedHasGap &&
           score <= FaceEngine.verificationThreshold &&
           student.eligible;
-      final status = verified
+      final eligibility = _eligibilityFor(session, student);
+      final sessionAllowed =
+          verified &&
+          student.status == 'active' &&
+          eligibility != null &&
+          eligibility.eligibilityStatus == 'eligible' &&
+          eligibility.attendanceStatus != 'verified';
+      final cloudDecision = widget.onlineClient == null
+          ? null
+          : await widget.onlineClient!.evaluateExamEntry(
+              sessionId: session.id,
+              student: student,
+              matchScore: score,
+              confidenceGap: ranked.length > 1 ? ranked[1].value - score : 1,
+              matchThreshold: FaceEngine.verificationThreshold,
+              minimumConfidenceGap: FaceEngine.verificationMinimumGap,
+              livenessPassed: true,
+              identityMatched: selectedIsBest,
+              deviceType: Platform.isWindows ? 'desktop' : 'mobile',
+            );
+      final approved = cloudDecision?.verified ?? sessionAllowed;
+      final finalStatus = approved
           ? VerificationStatus.verified
           : VerificationStatus.notVerified;
       await widget.onVerificationSaved(
@@ -3172,26 +3259,32 @@ class _VerifyPageState extends State<VerifyPage> {
           studentNumber: student.studentNumber,
           fullName: student.fullName,
           program: student.program,
-          status: status,
+          status: finalStatus,
           score: score,
           capturedImagePath: storedLivePhoto.path,
           storedImagePath: student.photoPath,
-          mode: FaceEngine.signatureBackend,
+          mode: '${FaceEngine.signatureBackend} / ${session.courseCode}',
         ),
       );
       if (!mounted) return;
       setState(() {
-        resultStatus = status;
+        resultStatus = finalStatus;
         resultScore = score;
-        resultMessage = verified
-            ? 'Verified ${student.fullName}. Student ID ${student.studentNumber}.'
+        resultMessage = approved
+            ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${cloudDecision?.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.'
+            : cloudDecision != null
+            ? cloudDecision.reason
             : !selectedIsBest
             ? 'Not verified: the live face does not match the selected student.'
             : !selectedHasGap
             ? 'Not verified: identity confidence is not unique enough. Use the student record for manual confirmation.'
+            : eligibility == null
+            ? 'Access denied: ${student.fullName} is registered but not eligible for ${session.courseCode}.'
+            : eligibility.attendanceStatus == 'verified'
+            ? 'Already verified for ${session.courseCode}.'
             : 'Not verified. The biometric score or eligibility check failed.';
       });
-      await ExamVerifyFeedback.playVerificationTone(status);
+      await ExamVerifyFeedback.playVerificationTone(finalStatus);
     } catch (error) {
       if (!mounted) return;
       setState(() => resultMessage = error.toString());
@@ -3202,17 +3295,32 @@ class _VerifyPageState extends State<VerifyPage> {
       if (mounted) setState(() => verifying = false);
     }
   }
+
+  ExamEligibilityRecord? _eligibilityFor(
+    ExamSessionRecord session,
+    StudentRecord student,
+  ) {
+    final studentId = student.id;
+    if (studentId == null) return null;
+    return widget.examEligibilities.firstWhereOrNull(
+      (row) => row.examSessionId == session.id && row.studentId == studentId,
+    );
+  }
 }
 
 class AutoIdentifyPage extends StatefulWidget {
   const AutoIdentifyPage({
     required this.students,
+    required this.examSessions,
+    required this.examEligibilities,
     required this.onVerificationSaved,
     this.onlineClient,
     super.key,
   });
 
   final List<StudentRecord> students;
+  final List<ExamSessionRecord> examSessions;
+  final List<ExamEligibilityRecord> examEligibilities;
   final Future<void> Function(VerificationRecord record) onVerificationSaved;
   final OnlineBackendClient? onlineClient;
 
@@ -3222,6 +3330,7 @@ class AutoIdentifyPage extends StatefulWidget {
 
 class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
   File? livePhoto;
+  ExamSessionRecord? selectedSession;
   String? resultMessage;
   StudentRecord? resultStudent;
   VerificationStatus? resultStatus;
@@ -3232,6 +3341,9 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
 
   @override
   Widget build(BuildContext context) {
+    selectedSession ??= widget.examSessions
+        .where((row) => row.isActive)
+        .firstOrNull;
     return AppScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3248,11 +3360,24 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           ),
           if (widget.students.isEmpty)
             const EmptyState(message: 'No student records available.')
+          else if (widget.examSessions.where((row) => row.isActive).isEmpty)
+            const EmptyState(
+              message: 'Activate an exam session before auto-identify starts.',
+            )
           else
             PanelCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  _ExamSessionSelector(
+                    sessions: widget.examSessions
+                        .where((row) => row.isActive)
+                        .toList(),
+                    selected: selectedSession,
+                    onChanged: (value) =>
+                        setState(() => selectedSession = value),
+                  ),
+                  const SizedBox(height: 16),
                   if (desktopCameraAvailable)
                     _DesktopAutoIdentifyKiosk(
                       students: widget.students,
@@ -3354,6 +3479,14 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         message: 'No student records are available.',
       );
     }
+    final session = selectedSession;
+    if (session == null) {
+      return const _AutoIdentifyOutcome(
+        status: VerificationStatus.notVerified,
+        score: 1,
+        message: 'No active exam session selected.',
+      );
+    }
 
     setState(() {
       identifying = true;
@@ -3432,35 +3565,63 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           bestScore <= FaceEngine.identificationThreshold &&
           hasGap &&
           bestStudent.eligible;
-      final identifiedStudent = verified ? bestStudent : null;
+      final eligibility = bestStudent == null
+          ? null
+          : _eligibilityFor(session, bestStudent);
+      final sessionAllowed =
+          verified &&
+          bestStudent.status == 'active' &&
+          eligibility != null &&
+          eligibility.eligibilityStatus == 'eligible' &&
+          eligibility.attendanceStatus != 'verified';
+      final cloudDecision = widget.onlineClient == null
+          ? null
+          : await widget.onlineClient!.evaluateExamEntry(
+              sessionId: session.id,
+              student: bestStudent,
+              matchScore: bestScore,
+              confidenceGap: secondScore == null ? 1 : secondScore - bestScore,
+              matchThreshold: FaceEngine.identificationThreshold,
+              minimumConfidenceGap: FaceEngine.identificationMinimumGap,
+              livenessPassed: true,
+              identityMatched: verified,
+              deviceType: Platform.isWindows ? 'desktop' : 'mobile',
+            );
+      final approved = cloudDecision?.verified ?? sessionAllowed;
       await widget.onVerificationSaved(
         VerificationRecord(
           time: DateTime.now(),
-          studentNumber: identifiedStudent?.studentNumber ?? 'UNKNOWN',
-          fullName: identifiedStudent?.fullName ?? 'Unknown face',
-          program: identifiedStudent?.program ?? '',
-          status: verified
+          studentNumber: bestStudent?.studentNumber ?? 'UNKNOWN',
+          fullName: bestStudent?.fullName ?? 'Unknown face',
+          program: bestStudent?.program ?? '',
+          status: approved
               ? VerificationStatus.verified
               : VerificationStatus.notVerified,
           score: bestScore,
           capturedImagePath: storedLivePhoto.path,
-          storedImagePath: identifiedStudent?.photoPath,
-          mode: FaceEngine.signatureBackend,
+          storedImagePath: bestStudent?.photoPath,
+          mode: '${FaceEngine.signatureBackend} / ${session.courseCode}',
         ),
       );
-      final matchedName = identifiedStudent?.fullName ?? 'Student';
-      final matchedNumber = identifiedStudent?.studentNumber ?? 'UNKNOWN';
-      final message = verified
+      final matchedName = bestStudent?.fullName ?? 'Student';
+      final matchedNumber = bestStudent?.studentNumber ?? 'UNKNOWN';
+      final message = approved
           ? 'Verified $matchedName. Student ID $matchedNumber.'
+          : cloudDecision != null
+          ? cloudDecision.reason
           : ranked.isEmpty
           ? 'No compatible MobileFaceNet profiles found. Sync or enroll students with the mobile scanner.'
           : !hasGap
           ? 'Unauthorized: identity confidence is not unique enough. Use manual student record confirmation.'
+          : bestStudent != null && eligibility == null
+          ? 'Access denied: $matchedName is registered but not eligible for ${session.courseCode}.'
+          : bestStudent != null && eligibility?.attendanceStatus == 'verified'
+          ? 'Already verified: $matchedName was already verified for ${session.courseCode}.'
           : 'Unauthorized: no trusted student profile matched this scan.';
       if (mounted) {
         setState(() {
-          resultStudent = identifiedStudent;
-          resultStatus = verified
+          resultStudent = bestStudent;
+          resultStatus = approved
               ? VerificationStatus.verified
               : VerificationStatus.notVerified;
           resultScore = bestScore;
@@ -3468,10 +3629,10 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         });
       }
       final outcome = _AutoIdentifyOutcome(
-        status: verified
+        status: approved
             ? VerificationStatus.verified
             : VerificationStatus.notVerified,
-        student: identifiedStudent,
+        student: bestStudent,
         score: bestScore,
         message: message,
       );
@@ -3489,6 +3650,17 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
     } finally {
       if (mounted) setState(() => identifying = false);
     }
+  }
+
+  ExamEligibilityRecord? _eligibilityFor(
+    ExamSessionRecord session,
+    StudentRecord student,
+  ) {
+    final studentId = student.id;
+    if (studentId == null) return null;
+    return widget.examEligibilities.firstWhereOrNull(
+      (row) => row.examSessionId == session.id && row.studentId == studentId,
+    );
   }
 
   Future<void> _playVerificationTone(VerificationStatus status) async {
@@ -4998,6 +5170,303 @@ class NavButton extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _ExamSessionSelector extends StatelessWidget {
+  const _ExamSessionSelector({
+    required this.sessions,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final List<ExamSessionRecord> sessions;
+  final ExamSessionRecord? selected;
+  final ValueChanged<ExamSessionRecord?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DropdownButtonFormField<ExamSessionRecord>(
+      initialValue: selected,
+      decoration: const InputDecoration(labelText: 'Active exam session'),
+      items: [
+        for (final session in sessions)
+          DropdownMenuItem(value: session, child: Text(session.label)),
+      ],
+      onChanged: onChanged,
+    );
+  }
+}
+
+class ExamSessionsPage extends StatefulWidget {
+  const ExamSessionsPage({
+    required this.students,
+    required this.sessions,
+    required this.client,
+    required this.onChanged,
+    super.key,
+  });
+
+  final List<StudentRecord> students;
+  final List<ExamSessionRecord> sessions;
+  final OnlineBackendClient? client;
+  final Future<void> Function() onChanged;
+
+  @override
+  State<ExamSessionsPage> createState() => _ExamSessionsPageState();
+}
+
+class _ExamSessionsPageState extends State<ExamSessionsPage> {
+  final code = TextEditingController();
+  final name = TextEditingController();
+  final program = TextEditingController();
+  final level = TextEditingController();
+  final date = TextEditingController();
+  final venue = TextEditingController();
+  String? message;
+  bool busy = false;
+
+  @override
+  void dispose() {
+    code.dispose();
+    name.dispose();
+    program.dispose();
+    level.dispose();
+    date.dispose();
+    venue.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const PageHero(
+            title: 'Exam Sessions',
+            subtitle:
+                'Authorize already-enrolled students for a specific examination.',
+          ),
+          if (widget.client == null)
+            const EmptyState(
+              message:
+                  'Connect to the cloud backend to create and manage exam sessions.',
+            )
+          else ...[
+            PanelCard(
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  SizedBox(
+                    width: 180,
+                    child: TextField(
+                      controller: code,
+                      decoration: const InputDecoration(
+                        labelText: 'Course code',
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 260,
+                    child: TextField(
+                      controller: name,
+                      decoration: const InputDecoration(
+                        labelText: 'Course name',
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 180,
+                    child: TextField(
+                      controller: program,
+                      decoration: const InputDecoration(labelText: 'Program'),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 140,
+                    child: TextField(
+                      controller: level,
+                      decoration: const InputDecoration(labelText: 'Level'),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 180,
+                    child: TextField(
+                      controller: date,
+                      decoration: const InputDecoration(
+                        labelText: 'Exam date YYYY-MM-DD',
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 220,
+                    child: TextField(
+                      controller: venue,
+                      decoration: const InputDecoration(labelText: 'Venue'),
+                    ),
+                  ),
+                  FilledButton.icon(
+                    onPressed: busy ? null : _create,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Create session'),
+                  ),
+                ],
+              ),
+            ),
+            if (message != null) ...[
+              const SizedBox(height: 12),
+              Text(message!, style: const TextStyle(color: AppColors.muted)),
+            ],
+            const SizedBox(height: 18),
+            for (final session in widget.sessions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: PanelCard(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              session.label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            Text(
+                              '${session.program} Level ${session.level} | ${session.examDate} | ${session.status}',
+                              style: const TextStyle(color: AppColors.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => _addStudent(session),
+                        child: const Text('Add student'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () => _activate(session),
+                        child: Text(session.isActive ? 'Active' : 'Activate'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () => _complete(session),
+                        child: const Text('Complete'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _create() async {
+    setState(() => busy = true);
+    try {
+      await widget.client!.createExamSession(
+        courseCode: code.text.trim(),
+        courseName: name.text.trim(),
+        program: program.text.trim(),
+        level: level.text.trim(),
+        examDate: date.text.trim(),
+        startTime: '',
+        endTime: '',
+        venue: venue.text.trim(),
+      );
+      await widget.onChanged();
+    } catch (error) {
+      if (mounted) setState(() => message = error.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _activate(ExamSessionRecord session) async {
+    await widget.client!.activateExamSession(session.id);
+    await widget.onChanged();
+  }
+
+  Future<void> _complete(ExamSessionRecord session) async {
+    await widget.client!.completeExamSession(session.id);
+    await widget.onChanged();
+  }
+
+  Future<void> _addStudent(ExamSessionRecord session) async {
+    StudentRecord? student = widget.students.firstOrNull;
+    var eligibilityType = 'regular';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Add student to ${session.courseCode}'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<StudentRecord>(
+                  initialValue: student,
+                  decoration: const InputDecoration(labelText: 'Student'),
+                  items: [
+                    for (final row in widget.students)
+                      DropdownMenuItem(
+                        value: row,
+                        child: Text('${row.studentNumber} - ${row.fullName}'),
+                      ),
+                  ],
+                  onChanged: (value) => setDialogState(() => student = value),
+                ),
+                const SizedBox(height: 14),
+                DropdownButtonFormField<String>(
+                  initialValue: eligibilityType,
+                  decoration: const InputDecoration(
+                    labelText: 'Eligibility type',
+                  ),
+                  items: [
+                    for (final type in const [
+                      'regular',
+                      'repeat',
+                      'deferred',
+                      'supplementary',
+                      'manual_override',
+                    ])
+                      DropdownMenuItem(value: type, child: Text(type)),
+                  ],
+                  onChanged: (value) => setDialogState(
+                    () => eligibilityType = value ?? 'regular',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Add eligible student'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || student?.id == null) return;
+    await widget.client!.addExamEligibility(
+      sessionId: session.id,
+      studentId: student!.id!,
+      eligibilityType: eligibilityType,
+    );
+    await widget.onChanged();
   }
 }
 
@@ -7550,6 +8019,8 @@ class StudentRecord {
     this.studentNumberHash,
     required this.fullName,
     required this.program,
+    this.level = '',
+    this.status = 'active',
     required this.eligible,
     required this.note,
     required this.photoPath,
@@ -7563,6 +8034,8 @@ class StudentRecord {
   final String? studentNumberHash;
   final String fullName;
   final String program;
+  final String level;
+  final String status;
   final bool eligible;
   final String note;
   final String photoPath;
@@ -7582,6 +8055,8 @@ class StudentRecord {
           studentNumberHash ?? AuthService.hashIdentifier(studentNumber),
       fullName: fullName,
       program: program,
+      level: level,
+      status: status,
       eligible: eligible ?? this.eligible,
       note: note,
       photoPath: photoPath,
@@ -7599,6 +8074,8 @@ class StudentRecord {
           studentNumberHash ?? AuthService.hashIdentifier(studentNumber),
       'full_name': fullName,
       'program': program,
+      'level': level,
+      'student_status': status,
       'eligible': eligible ? 1 : 0,
       'note': note,
       'photo_path': photoPath,
@@ -7618,6 +8095,8 @@ class StudentRecord {
           AuthService.hashIdentifier(map['student_number'] as String),
       fullName: map['full_name'] as String,
       program: (map['program'] as String?) ?? '',
+      level: (map['level'] as String?) ?? '',
+      status: (map['student_status'] as String?) ?? 'active',
       eligible: (map['eligible'] as int? ?? 1) == 1,
       note: (map['note'] as String?) ?? '',
       photoPath: map['photo_path'] as String,
@@ -7646,6 +8125,8 @@ class StudentRecord {
           AuthService.hashIdentifier(number),
       fullName: (map['full_name'] as String?) ?? 'Unknown student',
       program: (map['program'] as String?) ?? '',
+      level: (map['level'] as String?) ?? '',
+      status: (map['status'] as String?) ?? 'active',
       eligible: (map['exam_eligible'] as int? ?? 1) == 1,
       note: (map['eligibility_note'] as String?) ?? '',
       photoPath:
@@ -7660,6 +8141,120 @@ class StudentRecord {
           profile['embedding_backend'] as String?,
     );
   }
+}
+
+class ExamSessionRecord {
+  const ExamSessionRecord({
+    required this.id,
+    required this.courseCode,
+    required this.courseName,
+    required this.program,
+    required this.level,
+    required this.examDate,
+    required this.startTime,
+    required this.endTime,
+    required this.venue,
+    required this.status,
+  });
+
+  final int id;
+  final String courseCode;
+  final String courseName;
+  final String program;
+  final String level;
+  final String examDate;
+  final String startTime;
+  final String endTime;
+  final String venue;
+  final String status;
+
+  bool get isActive => status == 'active';
+  String get label => '$courseCode - $courseName ($venue)';
+
+  Map<String, Object?> toMap() => {
+    'id': id,
+    'course_code': courseCode,
+    'course_name': courseName,
+    'program': program,
+    'level': level,
+    'exam_date': examDate,
+    'start_time': startTime,
+    'end_time': endTime,
+    'venue': venue,
+    'status': status,
+  };
+
+  static ExamSessionRecord fromMap(Map<String, Object?> map) =>
+      ExamSessionRecord(
+        id: (map['id'] as num).toInt(),
+        courseCode: (map['course_code'] as String?) ?? '',
+        courseName: (map['course_name'] as String?) ?? '',
+        program: (map['program'] as String?) ?? '',
+        level: (map['level'] as String?) ?? '',
+        examDate: (map['exam_date'] as String?) ?? '',
+        startTime: (map['start_time'] as String?) ?? '',
+        endTime: (map['end_time'] as String?) ?? '',
+        venue: (map['venue'] as String?) ?? '',
+        status: (map['status'] as String?) ?? 'scheduled',
+      );
+}
+
+class ExamEligibilityRecord {
+  const ExamEligibilityRecord({
+    required this.id,
+    required this.examSessionId,
+    required this.studentId,
+    required this.eligibilityType,
+    required this.eligibilityStatus,
+    required this.attendanceStatus,
+    this.verifiedAt,
+  });
+
+  final int id;
+  final int examSessionId;
+  final int studentId;
+  final String eligibilityType;
+  final String eligibilityStatus;
+  final String attendanceStatus;
+  final String? verifiedAt;
+
+  bool get mayEnter =>
+      eligibilityStatus == 'eligible' && attendanceStatus != 'verified';
+
+  Map<String, Object?> toMap() => {
+    'id': id,
+    'exam_session_id': examSessionId,
+    'student_id': studentId,
+    'eligibility_type': eligibilityType,
+    'eligibility_status': eligibilityStatus,
+    'attendance_status': attendanceStatus,
+    'verified_at': verifiedAt,
+  };
+
+  static ExamEligibilityRecord fromMap(Map<String, Object?> map) =>
+      ExamEligibilityRecord(
+        id: (map['id'] as num).toInt(),
+        examSessionId: (map['exam_session_id'] as num).toInt(),
+        studentId: (map['student_id'] as num).toInt(),
+        eligibilityType: (map['eligibility_type'] as String?) ?? 'regular',
+        eligibilityStatus: (map['eligibility_status'] as String?) ?? 'eligible',
+        attendanceStatus:
+            (map['attendance_status'] as String?) ?? 'not_verified',
+        verifiedAt: map['verified_at'] as String?,
+      );
+}
+
+class ExamEntryDecision {
+  const ExamEntryDecision({
+    required this.decision,
+    required this.reason,
+    this.eligibilityType,
+  });
+
+  final String decision;
+  final String reason;
+  final String? eligibilityType;
+  bool get verified => decision == 'VERIFIED';
 }
 
 class VerificationRecord {
@@ -8030,6 +8625,8 @@ class ExamVerifyStore {
             student_number_hash TEXT,
             full_name TEXT NOT NULL,
             program TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT '',
+            student_status TEXT NOT NULL DEFAULT 'active',
             eligible INTEGER NOT NULL,
             note TEXT NOT NULL,
             photo_path TEXT NOT NULL,
@@ -8062,6 +8659,7 @@ class ExamVerifyStore {
             deleted_at TEXT NOT NULL
           )
         ''');
+        await _createExamSessionTables(db);
       },
     );
     await _ensureColumns(_database!);
@@ -8075,6 +8673,7 @@ class ExamVerifyStore {
         deleted_at TEXT NOT NULL
       )
     ''');
+    await _createExamSessionTables(db);
     final studentColumns = await db.rawQuery('PRAGMA table_info(students)');
     final studentExisting = studentColumns
         .map((row) => row['name'] as String)
@@ -8107,6 +8706,16 @@ class ExamVerifyStore {
           whereArgs: [row['id']],
         );
       }
+    }
+    if (!studentExisting.contains('level')) {
+      await db.execute(
+        "ALTER TABLE students ADD COLUMN level TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!studentExisting.contains('student_status')) {
+      await db.execute(
+        "ALTER TABLE students ADD COLUMN student_status TEXT NOT NULL DEFAULT 'active'",
+      );
     }
     final logColumns = await db.rawQuery(
       'PRAGMA table_info(verification_logs)',
@@ -8151,6 +8760,34 @@ class ExamVerifyStore {
         );
       }
     }
+  }
+
+  static Future<void> _createExamSessionTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS exam_sessions (
+        id INTEGER PRIMARY KEY,
+        course_code TEXT NOT NULL,
+        course_name TEXT NOT NULL,
+        program TEXT NOT NULL,
+        level TEXT NOT NULL,
+        exam_date TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        venue TEXT NOT NULL,
+        status TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS exam_session_students (
+        id INTEGER PRIMARY KEY,
+        exam_session_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        eligibility_type TEXT NOT NULL,
+        eligibility_status TEXT NOT NULL,
+        attendance_status TEXT NOT NULL,
+        verified_at TEXT
+      )
+    ''');
   }
 
   Future<List<StudentRecord>> listStudents() async {
@@ -8250,6 +8887,40 @@ class ExamVerifyStore {
   Future<void> clearLogs() async {
     final db = await database;
     await db.delete('verification_logs');
+  }
+
+  Future<List<ExamSessionRecord>> listExamSessions() async {
+    final db = await database;
+    final rows = await db.query('exam_sessions', orderBy: 'exam_date DESC');
+    return rows.map(ExamSessionRecord.fromMap).toList();
+  }
+
+  Future<void> replaceExamSessions(List<ExamSessionRecord> rows) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('exam_sessions');
+      for (final row in rows) {
+        await txn.insert('exam_sessions', row.toMap());
+      }
+    });
+  }
+
+  Future<List<ExamEligibilityRecord>> listExamEligibilities() async {
+    final db = await database;
+    final rows = await db.query('exam_session_students');
+    return rows.map(ExamEligibilityRecord.fromMap).toList();
+  }
+
+  Future<void> replaceExamEligibilities(
+    List<ExamEligibilityRecord> rows,
+  ) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('exam_session_students');
+      for (final row in rows) {
+        await txn.insert('exam_session_students', row.toMap());
+      }
+    });
   }
 }
 
@@ -8822,6 +9493,8 @@ class OnlineBackendClient {
       'student_number_mask': AuthService.maskIdentifier(student.studentNumber),
       'full_name': student.fullName,
       'program': student.program,
+      'level': student.level,
+      'status': student.status,
       'photo_url': portablePortrait,
       'biometric_profile': {
         'signature': student.signature,
@@ -8899,6 +9572,101 @@ class OnlineBackendClient {
       response = await _postJson('/verification/logs/reset', {});
     }
     return (response['deleted'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<List<ExamSessionRecord>> listExamSessions() async {
+    final response = await _getJson('/exam-sessions');
+    final rows = response['exam_sessions'] as List;
+    return [
+      for (final row in rows)
+        ExamSessionRecord.fromMap(row as Map<String, dynamic>),
+    ];
+  }
+
+  Future<List<ExamEligibilityRecord>> listExamEligibilities(
+    int sessionId,
+  ) async {
+    final response = await _getJson(
+      '/exam-sessions/$sessionId/eligible-students',
+    );
+    final rows = response['eligible_students'] as List;
+    return [
+      for (final row in rows)
+        ExamEligibilityRecord.fromMap(row as Map<String, dynamic>),
+    ];
+  }
+
+  Future<ExamSessionRecord> createExamSession({
+    required String courseCode,
+    required String courseName,
+    required String program,
+    required String level,
+    required String examDate,
+    required String startTime,
+    required String endTime,
+    required String venue,
+  }) async {
+    final response = await _postJson('/exam-sessions', {
+      'course_code': courseCode,
+      'course_name': courseName,
+      'program': program,
+      'level': level,
+      'exam_date': examDate,
+      'start_time': startTime,
+      'end_time': endTime,
+      'venue': venue,
+    });
+    return ExamSessionRecord.fromMap(
+      response['exam_session'] as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> activateExamSession(int sessionId) async {
+    await _postJson('/exam-sessions/$sessionId/activate', {});
+  }
+
+  Future<void> completeExamSession(int sessionId) async {
+    await _postJson('/exam-sessions/$sessionId/complete', {});
+  }
+
+  Future<void> addExamEligibility({
+    required int sessionId,
+    required int studentId,
+    required String eligibilityType,
+  }) async {
+    await _postJson('/exam-sessions/$sessionId/eligible-students', {
+      'student_id': studentId,
+      'eligibility_type': eligibilityType,
+      'eligibility_status': 'eligible',
+    });
+  }
+
+  Future<ExamEntryDecision> evaluateExamEntry({
+    required int sessionId,
+    required StudentRecord? student,
+    required double matchScore,
+    required double confidenceGap,
+    required double matchThreshold,
+    required double minimumConfidenceGap,
+    required bool livenessPassed,
+    required bool identityMatched,
+    required String deviceType,
+  }) async {
+    final response = await _postJson('/exam-sessions/$sessionId/verify', {
+      'detected_student_id': student?.id,
+      'match_score': matchScore,
+      'confidence_gap': confidenceGap,
+      'match_threshold': matchThreshold,
+      'minimum_confidence_gap': minimumConfidenceGap,
+      'liveness_passed': livenessPassed,
+      'identity_matched': identityMatched,
+      'device_type': deviceType,
+    });
+    return ExamEntryDecision(
+      decision: response['decision'] as String,
+      reason: response['reason'] as String? ?? '',
+      eligibilityType: response['eligibility_type'] as String?,
+    );
   }
 
   Future<void> submitAccessRequest(AdminAccessRequestDraft request) async {

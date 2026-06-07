@@ -60,6 +60,19 @@ Local mobile and desktop caches remain available for offline verification and
 are protected by each operating system's application/user storage boundary.
 Do not copy the application data directory to untrusted devices.
 
+## Exam Session Eligibility
+
+Students register their biometric profile only once during institutional
+enrollment. During examinations, the system verifies the live face against the
+selected exam session's eligible student list. This allows regular, repeat,
+deferred, and supplementary students to be handled correctly while preventing
+registered students from entering exams they are not authorized to write.
+
+Face recognition establishes identity. The active exam-session roster provides
+the final authorization decision. A student is approved only after liveness,
+identity threshold/gap checks, active student status, eligible roster status,
+and duplicate-attendance checks all pass.
+
 ## Setup
 
 Install Python 3.10 or 3.11 first. During installation, tick "Add Python to PATH".

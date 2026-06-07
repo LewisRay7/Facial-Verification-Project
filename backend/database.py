@@ -38,6 +38,7 @@ def init_db() -> None:
 
     ModelsBase.metadata.create_all(bind=engine)
     _ensure_access_request_columns()
+    _ensure_exam_session_columns()
     with SessionLocal() as db:
         existing = db.query(User).filter(User.username == settings.super_admin_username).first()
         if existing is None:
@@ -74,6 +75,44 @@ def _ensure_access_request_columns() -> None:
         statements.append(
             "ALTER TABLE admin_requests ADD COLUMN department VARCHAR(160) NOT NULL DEFAULT ''"
         )
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+
+
+def _ensure_exam_session_columns() -> None:
+    inspector = inspect(engine)
+    student_columns = {column["name"] for column in inspector.get_columns("students")}
+    log_columns = {
+        column["name"] for column in inspector.get_columns("verification_logs")
+    }
+    statements: list[str] = []
+    student_migrations = {
+        "level": "ALTER TABLE students ADD COLUMN level VARCHAR(60) NOT NULL DEFAULT ''",
+        "status": "ALTER TABLE students ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'active'",
+    }
+    log_migrations = {
+        "exam_session_id": "ALTER TABLE verification_logs ADD COLUMN exam_session_id INTEGER",
+        "decision": "ALTER TABLE verification_logs ADD COLUMN decision VARCHAR(40) NOT NULL DEFAULT ''",
+        "reason": "ALTER TABLE verification_logs ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+        "confidence_gap": "ALTER TABLE verification_logs ADD COLUMN confidence_gap FLOAT NOT NULL DEFAULT 0",
+        "liveness_passed": "ALTER TABLE verification_logs ADD COLUMN liveness_passed BOOLEAN NOT NULL DEFAULT 0",
+        "eligibility_type": "ALTER TABLE verification_logs ADD COLUMN eligibility_type VARCHAR(30) NOT NULL DEFAULT ''",
+        "verified_by": "ALTER TABLE verification_logs ADD COLUMN verified_by VARCHAR(80) NOT NULL DEFAULT ''",
+        "device_type": "ALTER TABLE verification_logs ADD COLUMN device_type VARCHAR(40) NOT NULL DEFAULT ''",
+        "venue": "ALTER TABLE verification_logs ADD COLUMN venue VARCHAR(180) NOT NULL DEFAULT ''",
+    }
+    statements.extend(
+        statement
+        for column, statement in student_migrations.items()
+        if column not in student_columns
+    )
+    statements.extend(
+        statement
+        for column, statement in log_migrations.items()
+        if column not in log_columns
+    )
     if statements:
         with engine.begin() as connection:
             for statement in statements:

@@ -19,10 +19,13 @@ from SRC.config import CAPTURE_DIR, PHOTO_DIR, ensure_directories
 from SRC.config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD
 from SRC.database import (
     add_student,
+    add_exam_session_student,
     add_verification_log,
+    active_exam_session,
     audit_log_integrity,
     authenticate_user,
     clear_verification_logs,
+    create_exam_session,
     dashboard_summary,
     evaluation_summary,
     get_student_by_number,
@@ -30,10 +33,14 @@ from SRC.database import (
     list_logs,
     list_audit_events,
     list_students,
+    list_exam_sessions,
+    list_exam_session_students,
     log_audit_event,
     mask_student_identifier,
     search_students,
     set_student_active,
+    set_exam_session_status,
+    evaluate_local_exam_entry,
     store_pending_email_otp,
     two_factor_setup_hint,
     verify_email_otp,
@@ -72,6 +79,7 @@ ROLE_PAGES = {
         "Auto Identify",
         "Face Unlock Scanner",
         "Students",
+        "Exam Sessions",
         "System Evaluation",
         "Verification Logs",
     },
@@ -82,6 +90,7 @@ ROLE_PAGES = {
         "Auto Identify",
         "Face Unlock Scanner",
         "Students",
+        "Exam Sessions",
         "System Evaluation",
         "Verification Logs",
     },
@@ -848,6 +857,14 @@ def register_student_page() -> None:
 
 
 def verify_student_page() -> None:
+    session = active_exam_session()
+    if session is None:
+        page_header(
+            "Verify Student",
+            "Identity plus selected exam-session eligibility validation.",
+        )
+        st.error("Activate an exam session before verifying exam entry.")
+        return
     page_header(
         "Exam Verification",
         "Select a student, capture a live face, and approve or reject entry.",
@@ -984,7 +1001,13 @@ def verify_student_page() -> None:
             backend_preference=backend_preference,
         )
         duration_ms = (perf_counter() - start_time) * 1000
-        status = "VERIFIED" if result.is_match else "NOT VERIFIED"
+        entry_decision = evaluate_local_exam_entry(
+            int(session["id"]),
+            int(selected_student["id"]),
+            True,
+            result.is_match,
+        )
+        status = "VERIFIED" if entry_decision["decision"] == "VERIFIED" else "NOT VERIFIED"
         match_threshold = (
             facenet_threshold
             if "FaceNet" in result.backend
@@ -1006,13 +1029,15 @@ def verify_student_page() -> None:
             match_threshold=match_threshold,
         )
 
-        if result.is_match:
-            if selected_student["exam_eligible"]:
-                st.success(f"{status}: face matched and student is eligible.")
-            else:
-                st.warning(
-                    f"{status}: face matched, but this student is not eligible to write."
-                )
+        if entry_decision["decision"] == "VERIFIED":
+            st.success(
+                f"VERIFIED for {session['course_code']}: "
+                f"{entry_decision.get('eligibility_type', 'regular')} student."
+            )
+        elif entry_decision["decision"] == "ALREADY_VERIFIED":
+            st.warning(entry_decision["reason"])
+        elif result.is_match:
+            st.error(f"ACCESS DENIED: {entry_decision['reason']}")
         else:
             st.error(f"{status}: face did not match.")
 
@@ -1041,6 +1066,14 @@ def auto_identify_page() -> None:
         "Automatic Student Identification",
         "Capture a live face, find the closest registered student, and check exam eligibility.",
         accent="#a78bfa",
+    )
+    session = active_exam_session()
+    if session is None:
+        st.error("Activate an exam session before Auto Identify can approve exam entry.")
+        return
+    st.info(
+        f"Active exam: {session['course_code']} - {session['course_name']} | "
+        f"{session['program']} Level {session['level']} | {session['venue']}"
     )
 
     students = [dict(row) for row in list_students(active_only=True)]
@@ -1125,7 +1158,15 @@ def auto_identify_page() -> None:
             st.error("A matching result was returned, but the student record could not be loaded.")
             return
 
-        log_status = "VERIFIED" if result.status == "VERIFIED" else "NOT VERIFIED"
+        entry_decision = evaluate_local_exam_entry(
+            int(session["id"]),
+            int(matched_student["id"]),
+            True,
+            result.status == "VERIFIED",
+        )
+        log_status = (
+            "VERIFIED" if entry_decision["decision"] == "VERIFIED" else "NOT VERIFIED"
+        )
         add_verification_log(
             student_id=int(matched_student["id"]),
             result=log_status,
@@ -1143,10 +1184,15 @@ def auto_identify_page() -> None:
         else:
             render_html(eligibility_badge(bool(matched_student["exam_eligible"])))
 
-        if result.status == "VERIFIED" and matched_student["exam_eligible"]:
-            st.success("Student identified and approved for exam entry.")
+        if entry_decision["decision"] == "VERIFIED":
+            st.success(
+                f"Student identified and approved for {session['course_code']} "
+                f"as {entry_decision.get('eligibility_type', 'regular')}."
+            )
+        elif entry_decision["decision"] == "ALREADY_VERIFIED":
+            st.warning(entry_decision["reason"])
         elif result.status == "VERIFIED":
-            st.warning("Student identified, but they are not eligible to write this exam.")
+            st.error(f"ACCESS DENIED: {entry_decision['reason']}")
 
         result_left, result_right = st.columns([1, 1])
         with result_left:
@@ -1526,6 +1572,71 @@ def logs_page() -> None:
         st.warning("The captured image file for this log entry is no longer available.")
 
 
+def exam_sessions_page() -> None:
+    page_header(
+        "Exam Sessions",
+        "Link already-enrolled students to the specific examination they are authorized to write.",
+    )
+    with st.form("create_exam_session"):
+        course_code = st.text_input("Course code")
+        course_name = st.text_input("Course name")
+        program = st.text_input("Program")
+        level = st.text_input("Exam level")
+        exam_date = st.text_input("Exam date", placeholder="YYYY-MM-DD")
+        venue = st.text_input("Venue")
+        if st.form_submit_button("Create exam session"):
+            create_exam_session(
+                course_code,
+                course_name,
+                program,
+                level,
+                exam_date,
+                venue,
+                st.session_state.get("username", "admin"),
+            )
+            st.success("Exam session created.")
+            st.rerun()
+
+    sessions = list_exam_sessions()
+    students = list_students(active_only=False)
+    for session in sessions:
+        with st.expander(
+            f"{session['course_code']} - {session['course_name']} | {session['status']}"
+        ):
+            st.write(
+                f"{session['program']} Level {session['level']} | "
+                f"{session['exam_date']} | {session['venue']}"
+            )
+            left, middle = st.columns(2)
+            if left.button("Activate", key=f"activate_{session['id']}"):
+                set_exam_session_status(session["id"], "active")
+                st.rerun()
+            if middle.button("Complete", key=f"complete_{session['id']}"):
+                set_exam_session_status(session["id"], "completed")
+                st.rerun()
+            if students:
+                selected = st.selectbox(
+                    "Add existing student",
+                    students,
+                    format_func=lambda row: f"{row['student_number']} - {row['full_name']}",
+                    key=f"student_{session['id']}",
+                )
+                eligibility_type = st.selectbox(
+                    "Eligibility type",
+                    ["regular", "repeat", "deferred", "supplementary", "manual_override"],
+                    key=f"type_{session['id']}",
+                )
+                if st.button("Add eligible student", key=f"add_{session['id']}"):
+                    add_exam_session_student(
+                        session["id"], selected["id"], eligibility_type
+                    )
+                    st.rerun()
+            st.dataframe(
+                list_exam_session_students(session["id"]),
+                use_container_width=True,
+            )
+
+
 def students_page() -> None:
     require_admin()
     page_header(
@@ -1881,6 +1992,7 @@ NAV_ITEMS = {
     "Auto Identify": {"icon": "\u25ce", "page": auto_identify_page},
     "Face Unlock Scanner": {"icon": "\u25a3", "page": face_unlock_scanner_page},
     "Students": {"icon": "ID", "page": students_page},
+    "Exam Sessions": {"icon": "EX", "page": exam_sessions_page},
     "System Evaluation": {"icon": "\u03a3", "page": evaluation_page},
     "Verification Logs": {"icon": "\u2261", "page": logs_page},
 }

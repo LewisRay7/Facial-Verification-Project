@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import init_db
-from backend.routes import admin, auth, health, students, verification
+from backend.routes import admin, auth, exam_sessions, health, students, verification
 
 
 def create_app() -> FastAPI:
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(students.router)
+    app.include_router(exam_sessions.router)
     app.include_router(verification.router)
     return app
 

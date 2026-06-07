@@ -58,6 +58,8 @@ def sync_student(
         db.add(row)
     row.full_name = payload.full_name
     row.program = payload.program
+    row.level = payload.level
+    row.status = payload.status
     biometric_profile = dict(payload.biometric_profile)
     biometric_profile["portrait_sha256"] = sha256_text(payload.photo_url)
     row.photo_url = encrypt_text(payload.photo_url)
@@ -112,6 +114,8 @@ def _student_to_dict(row: Student) -> dict:
         "student_number_mask": row.student_number_mask,
         "full_name": row.full_name,
         "program": row.program,
+        "level": row.level,
+        "status": row.status,
         "photo_url": photo_url,
         "biometric_profile": biometric_profile,
         "created_at": row.created_at.isoformat(),
