@@ -133,6 +133,7 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
                 "right_eye_open": right_eye,
                 "pose_reliable": True,
                 "landmark_paths": _landmark_paths(points),
+                "landmark_image_aspect_ratio": frame_width / frame_height,
                 "message": "Face landmarks locked.",
             }
     except Exception:
@@ -151,6 +152,7 @@ def analyze_live_face_signal(image_path: Path) -> dict[str, object]:
         "right_eye_open": 0.8,
         "pose_reliable": False,
         "landmark_paths": [],
+        "landmark_image_aspect_ratio": image.shape[1] / image.shape[0],
         "message": "Face candidate found. Waiting for reliable landmarks.",
     }
 
@@ -166,6 +168,7 @@ def _empty_signal(message: str) -> dict[str, object]:
         "right_eye_open": 0.5,
         "pose_reliable": False,
         "landmark_paths": [],
+        "landmark_image_aspect_ratio": 0.0,
         "message": message,
     }
 
