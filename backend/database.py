@@ -97,7 +97,7 @@ def _ensure_exam_session_columns() -> None:
         "decision": "ALTER TABLE verification_logs ADD COLUMN decision VARCHAR(40) NOT NULL DEFAULT ''",
         "reason": "ALTER TABLE verification_logs ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
         "confidence_gap": "ALTER TABLE verification_logs ADD COLUMN confidence_gap FLOAT NOT NULL DEFAULT 0",
-        "liveness_passed": "ALTER TABLE verification_logs ADD COLUMN liveness_passed BOOLEAN NOT NULL DEFAULT 0",
+        "liveness_passed": "ALTER TABLE verification_logs ADD COLUMN liveness_passed BOOLEAN NOT NULL DEFAULT FALSE",
         "eligibility_type": "ALTER TABLE verification_logs ADD COLUMN eligibility_type VARCHAR(30) NOT NULL DEFAULT ''",
         "verified_by": "ALTER TABLE verification_logs ADD COLUMN verified_by VARCHAR(80) NOT NULL DEFAULT ''",
         "device_type": "ALTER TABLE verification_logs ADD COLUMN device_type VARCHAR(40) NOT NULL DEFAULT ''",
