@@ -20,6 +20,7 @@ from SRC.config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD
 from SRC.database import (
     add_student,
     add_exam_session_student,
+    add_matching_exam_cohort,
     add_verification_log,
     active_exam_session,
     audit_log_integrity,
@@ -1614,11 +1615,39 @@ def exam_sessions_page() -> None:
             if middle.button("Complete", key=f"complete_{session['id']}"):
                 set_exam_session_status(session["id"], "completed")
                 st.rerun()
-            if students:
+            matching_students = [
+                row
+                for row in students
+                if row.get("student_status", "active") == "active"
+                and (
+                    not session["program"]
+                    or row.get("program", "").casefold() == session["program"].casefold()
+                )
+                and (
+                    not session["level"]
+                    or str(row.get("level", "")).casefold() == session["level"].casefold()
+                )
+            ]
+            st.caption(
+                f"{len(matching_students)} active student(s) match "
+                f"{session['program']} Level {session['level']}. "
+                "Use exceptions for repeat, deferred, or supplementary students."
+            )
+            if st.button("Add matching cohort", key=f"cohort_{session['id']}"):
+                added = add_matching_exam_cohort(session["id"])
+                st.success(f"Added {added} matching student(s).")
+                st.rerun()
+            active_students = [
+                row for row in students if row.get("student_status", "active") == "active"
+            ]
+            if active_students:
                 selected = st.selectbox(
-                    "Add existing student",
-                    students,
-                    format_func=lambda row: f"{row['student_number']} - {row['full_name']}",
+                    "Add individual exception",
+                    active_students,
+                    format_func=lambda row: (
+                        f"{row['student_number']} - {row['full_name']} "
+                        f"({row['program']} Level {row.get('level', '')})"
+                    ),
                     key=f"student_{session['id']}",
                 )
                 eligibility_type = st.selectbox(

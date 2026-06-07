@@ -152,6 +152,54 @@ def list_eligible_students(
     return {"ok": True, "eligible_students": [_eligibility_dict(row) for row in rows]}
 
 
+@router.post("/{session_id}/eligible-students/from-cohort")
+def add_matching_cohort(
+    session_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    session = _session_or_404(db, session_id)
+    query = db.query(Student).filter(Student.active.is_(True), Student.status == "active")
+    if session.program.strip():
+        query = query.filter(Student.program.ilike(session.program.strip()))
+    if session.level.strip():
+        query = query.filter(Student.level.ilike(session.level.strip()))
+
+    added = 0
+    for student in query.all():
+        existing = db.query(ExamSessionStudent).filter(
+            ExamSessionStudent.exam_session_id == session_id,
+            ExamSessionStudent.student_id == student.id,
+        ).first()
+        if existing is not None:
+            continue
+        db.add(
+            ExamSessionStudent(
+                exam_session_id=session_id,
+                student_id=student.id,
+                eligibility_type="regular",
+                eligibility_status="eligible",
+                notes="Added from matching program and level cohort.",
+            )
+        )
+        added += 1
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="EXAM_COHORT_ADDED",
+        target=f"{session.course_code}:{added}",
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "added": added,
+        "message": (
+            f"Added {added} active {session.program} Level {session.level} student(s). "
+            "Add repeat, deferred, and supplementary students as exceptions."
+        ),
+    }
+
+
 @router.delete("/{session_id}/eligible-students/{student_id}")
 def remove_eligible_student(
     session_id: int,
@@ -291,7 +339,7 @@ def _eligibility_dict(row: ExamSessionStudent) -> dict:
 
 def _decision_dict(decision: str, reason: str, session: ExamSession, student: Student | None, eligibility: ExamSessionStudent | None, payload: ExamEntryEvaluateIn) -> dict:
     return {
-        "decision": decision, "student_id": student.id if student else None,
+        "ok": True, "decision": decision, "student_id": student.id if student else None,
         "student_name": student.full_name if student else None,
         "student_number": student.student_number_mask if student else None,
         "match_score": payload.match_score, "confidence_gap": payload.confidence_gap,

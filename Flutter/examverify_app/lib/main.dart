@@ -3749,7 +3749,8 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
   int livenessFrames = 0;
   static const minimumQuality = 0.62;
   static const minimumPresenceQuality = 0.40;
-  static const cooldownDuration = Duration(seconds: 3);
+  static const resultDisplayDuration = Duration(seconds: 5);
+  static const cooldownDuration = Duration(seconds: 1);
 
   @override
   void initState() {
@@ -3825,6 +3826,8 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
         !previewReady ||
         active.value.isTakingPicture ||
         analyzing ||
+        phase == _KioskScanPhase.verified ||
+        phase == _KioskScanPhase.rejected ||
         phase == _KioskScanPhase.cooldown ||
         phase == _KioskScanPhase.identifying ||
         phase == _KioskScanPhase.livenessCheck ||
@@ -3927,7 +3930,7 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
           : 'Rejected. Manual check or retry required.';
     });
     cooldownTimer?.cancel();
-    cooldownTimer = Timer(const Duration(milliseconds: 900), _enterCooldown);
+    cooldownTimer = Timer(resultDisplayDuration, _enterCooldown);
   }
 
   void _enterCooldown() {
@@ -5346,7 +5349,12 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                       ),
                       OutlinedButton(
                         onPressed: () => _addStudent(session),
-                        child: const Text('Add student'),
+                        child: const Text('Add exception'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () => _addMatchingCohort(session),
+                        child: const Text('Add matching cohort'),
                       ),
                       const SizedBox(width: 8),
                       FilledButton(
@@ -5400,7 +5408,19 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
   }
 
   Future<void> _addStudent(ExamSessionRecord session) async {
-    StudentRecord? student = widget.students.firstOrNull;
+    final candidates =
+        widget.students.where((row) => row.status == 'active').toList()
+          ..sort((a, b) {
+            final aMatches =
+                a.program.toLowerCase() == session.program.toLowerCase() &&
+                a.level.toLowerCase() == session.level.toLowerCase();
+            final bMatches =
+                b.program.toLowerCase() == session.program.toLowerCase() &&
+                b.level.toLowerCase() == session.level.toLowerCase();
+            if (aMatches != bMatches) return aMatches ? -1 : 1;
+            return a.fullName.compareTo(b.fullName);
+          });
+    StudentRecord? student = candidates.firstOrNull;
     var eligibilityType = 'regular';
     final confirmed = await showDialog<bool>(
       context: context,
@@ -5416,13 +5436,20 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                   initialValue: student,
                   decoration: const InputDecoration(labelText: 'Student'),
                   items: [
-                    for (final row in widget.students)
+                    for (final row in candidates)
                       DropdownMenuItem(
                         value: row,
-                        child: Text('${row.studentNumber} - ${row.fullName}'),
+                        child: Text(
+                          '${row.studentNumber} - ${row.fullName} (${row.program} Level ${row.level})',
+                        ),
                       ),
                   ],
                   onChanged: (value) => setDialogState(() => student = value),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Regular students should match ${session.program} Level ${session.level}. Use this dialog for repeat, deferred, supplementary, or manual exceptions.',
+                  style: const TextStyle(color: AppColors.muted),
                 ),
                 const SizedBox(height: 14),
                 DropdownButtonFormField<String>(
@@ -5467,6 +5494,24 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
       eligibilityType: eligibilityType,
     );
     await widget.onChanged();
+  }
+
+  Future<void> _addMatchingCohort(ExamSessionRecord session) async {
+    setState(() => busy = true);
+    try {
+      final added = await widget.client!.addMatchingExamCohort(session.id);
+      if (mounted) {
+        setState(() {
+          message =
+              'Added $added active ${session.program} Level ${session.level} student(s). Add repeat, deferred, or supplementary students as exceptions.';
+        });
+      }
+      await widget.onChanged();
+    } catch (error) {
+      if (mounted) setState(() => message = error.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 }
 
@@ -9639,6 +9684,14 @@ class OnlineBackendClient {
       'eligibility_type': eligibilityType,
       'eligibility_status': 'eligible',
     });
+  }
+
+  Future<int> addMatchingExamCohort(int sessionId) async {
+    final response = await _postJson(
+      '/exam-sessions/$sessionId/eligible-students/from-cohort',
+      {},
+    );
+    return (response['added'] as num?)?.toInt() ?? 0;
   }
 
   Future<ExamEntryDecision> evaluateExamEntry({

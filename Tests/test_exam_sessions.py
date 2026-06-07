@@ -122,6 +122,19 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         self.assertEqual(result["decision"], "VERIFIED")
         self.assertEqual(result["eligibility_type"], "repeat")
 
+    def test_matching_cohort_adds_only_active_program_and_level(self):
+        response = self.client.post(
+            f"/exam-sessions/{self.session_id}/eligible-students/from-cohort",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["added"], 1)
+        roster = self.client.get(
+            f"/exam-sessions/{self.session_id}/eligible-students",
+            headers=self.headers,
+        ).json()["eligible_students"]
+        self.assertEqual([row["student_name"] for row in roster], ["John"])
+
     def test_unknown_face_denied(self):
         result = self.verify(None, identity_matched=False)
         self.assertEqual(result["decision"], "DENIED")

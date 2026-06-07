@@ -1032,6 +1032,51 @@ def add_exam_session_student(
         connection.commit()
 
 
+def add_matching_exam_cohort(session_id: int) -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(get_connection()) as connection:
+        session = connection.execute(
+            "SELECT * FROM exam_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if session is None:
+            return 0
+        students = connection.execute(
+            """
+            SELECT id FROM students
+            WHERE active = 1
+              AND (? = '' OR lower(program) = lower(?))
+              AND (? = '' OR lower(level) = lower(?))
+            """,
+            (
+                session["program"] or "",
+                session["program"] or "",
+                session["level"] or "",
+                session["level"] or "",
+            ),
+        ).fetchall()
+        added = 0
+        for student in students:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO exam_session_students (
+                    exam_session_id, student_id, eligibility_type, eligibility_status,
+                    attendance_status, notes, created_at, updated_at
+                )
+                VALUES (?, ?, 'regular', 'eligible', 'not_verified', ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    student["id"],
+                    "Added from matching program and level cohort.",
+                    now,
+                    now,
+                ),
+            )
+            added += max(cursor.rowcount, 0)
+        connection.commit()
+        return added
+
+
 def list_exam_session_students(session_id: int) -> list[dict[str, Any]]:
     with closing(get_connection()) as connection:
         rows = connection.execute(

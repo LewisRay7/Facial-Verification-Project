@@ -73,6 +73,14 @@ the final authorization decision. A student is approved only after liveness,
 identity threshold/gap checks, active student status, eligible roster status,
 and duplicate-attendance checks all pass.
 
+For regular exam entry, admins can add the active students whose current
+program and level match the exam session as one cohort. Repeat, deferred,
+supplementary, and manual-override candidates are added individually as
+exceptions. In production, the authoritative roster should be imported from
+the registrar or student-information system's semester course registrations.
+Biometric enrollment remains separate and does not need to be repeated when a
+student's level or registered courses change.
+
 ## Setup
 
 Install Python 3.10 or 3.11 first. During installation, tick "Add Python to PATH".
