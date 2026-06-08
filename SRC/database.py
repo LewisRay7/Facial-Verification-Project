@@ -152,6 +152,7 @@ def init_db() -> None:
                 attendance_status TEXT NOT NULL DEFAULT 'not_verified',
                 verified_at TEXT,
                 verified_by TEXT,
+                verified_device_id TEXT,
                 notes TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT,
@@ -177,9 +178,23 @@ def init_db() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exam_session_invigilators (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exam_session_id INTEGER NOT NULL,
+                invigilator_username TEXT NOT NULL,
+                assigned_by TEXT,
+                assigned_at TEXT NOT NULL,
+                role_in_session TEXT NOT NULL DEFAULT 'support',
+                UNIQUE(exam_session_id, invigilator_username)
+            )
+            """
+        )
         _ensure_student_columns(connection)
         _ensure_log_columns(connection)
         _ensure_user_columns(connection)
+        _ensure_exam_session_columns(connection)
         _seed_default_users(connection)
         _backfill_student_hashes(connection)
         connection.commit()
@@ -241,6 +256,17 @@ def _ensure_user_columns(connection: sqlite3.Connection) -> None:
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
             connection.execute(statement)
+
+
+def _ensure_exam_session_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(exam_session_students)").fetchall()
+    }
+    if "verified_device_id" not in existing_columns:
+        connection.execute(
+            "ALTER TABLE exam_session_students ADD COLUMN verified_device_id TEXT"
+        )
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -980,6 +1006,8 @@ def create_exam_session(
     program: str,
     level: str,
     exam_date: str,
+    start_time: str,
+    end_time: str,
     venue: str,
     created_by: str = "admin",
 ) -> int:
@@ -988,12 +1016,12 @@ def create_exam_session(
         cursor = connection.execute(
             """
             INSERT INTO exam_sessions (
-                course_code, course_name, program, level, exam_date, venue,
+                course_code, course_name, program, level, exam_date, start_time, end_time, venue,
                 status, created_by, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)
             """,
-            (course_code, course_name, program, level, exam_date, venue, created_by, now, now),
+            (course_code, course_name, program, level, exam_date, start_time, end_time, venue, created_by, now, now),
         )
         connection.commit()
         return int(cursor.lastrowid)
@@ -1013,6 +1041,63 @@ def active_exam_session() -> dict[str, Any] | None:
             "SELECT * FROM exam_sessions WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         return dict(row) if row else None
+
+
+def active_exam_sessions(username: str | None = None) -> list[dict[str, Any]]:
+    with closing(get_connection()) as connection:
+        assignments_exist = connection.execute(
+            "SELECT 1 FROM exam_session_invigilators LIMIT 1"
+        ).fetchone()
+        if username and assignments_exist:
+            rows = connection.execute(
+                """
+                SELECT sessions.* FROM exam_sessions sessions
+                JOIN exam_session_invigilators assignments
+                  ON assignments.exam_session_id = sessions.id
+                WHERE sessions.status = 'active'
+                  AND assignments.invigilator_username = ?
+                ORDER BY sessions.course_code
+                """,
+                (username,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM exam_sessions WHERE status = 'active' ORDER BY course_code"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def assign_exam_session_invigilator(
+    session_id: int,
+    username: str,
+    assigned_by: str,
+    role_in_session: str = "support",
+) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            INSERT INTO exam_session_invigilators (
+                exam_session_id, invigilator_username, assigned_by, assigned_at, role_in_session
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(exam_session_id, invigilator_username) DO UPDATE SET
+                role_in_session = excluded.role_in_session,
+                assigned_by = excluded.assigned_by,
+                assigned_at = excluded.assigned_at
+            """,
+            (
+                session_id, username, assigned_by,
+                datetime.now().isoformat(timespec="seconds"), role_in_session,
+            ),
+        )
+        connection.commit()
+
+
+def list_invigilator_users() -> list[dict[str, Any]]:
+    with closing(get_connection()) as connection:
+        rows = connection.execute(
+            "SELECT username, full_name, role FROM users WHERE active = 1 AND lower(role) = 'invigilator'"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 def set_exam_session_status(session_id: int, status: str) -> None:
@@ -1284,18 +1369,31 @@ def evaluate_local_exam_entry(
                 "decision": "ALREADY_VERIFIED",
                 "reason": f"Student was already verified at {eligibility['verified_at']}.",
             }
-        connection.execute(
+        updated = connection.execute(
             """
             UPDATE exam_session_students
-            SET attendance_status = 'verified', verified_at = ?, updated_at = ?
-            WHERE id = ?
+            SET attendance_status = 'verified', verified_at = ?, verified_by = ?,
+                verified_device_id = 'offline-local', updated_at = ?
+            WHERE id = ? AND attendance_status != 'verified'
             """,
             (
                 datetime.now().isoformat(timespec="seconds"),
+                "offline-local",
                 datetime.now().isoformat(timespec="seconds"),
                 eligibility["id"],
             ),
-        )
+        ).rowcount
+        if not updated:
+            current = connection.execute(
+                "SELECT * FROM exam_session_students WHERE id = ?", (eligibility["id"],)
+            ).fetchone()
+            return {
+                "decision": "ALREADY_VERIFIED",
+                "reason": (
+                    f"Student was already verified at {current['verified_at']} by "
+                    f"{current['verified_by'] or 'another invigilator'}."
+                ),
+            }
         connection.commit()
         return {
             "decision": "VERIFIED",

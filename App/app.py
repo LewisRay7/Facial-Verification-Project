@@ -20,6 +20,8 @@ from SRC.config import FACE_MATCH_THRESHOLD, LIGHTWEIGHT_MATCH_THRESHOLD
 from SRC.database import (
     add_student,
     add_exam_session_student,
+    active_exam_sessions,
+    assign_exam_session_invigilator,
     add_matching_exam_cohort,
     add_verification_log,
     active_exam_session,
@@ -37,6 +39,7 @@ from SRC.database import (
     list_students,
     list_exam_sessions,
     list_exam_session_students,
+    list_invigilator_users,
     log_audit_event,
     mask_student_identifier,
     remove_exam_session_student,
@@ -497,6 +500,29 @@ def eligibility_badge(is_eligible: bool) -> str:
     return '<span class="evs-status evs-status-blocked">Not eligible</span>'
 
 
+def selected_active_exam_session(key: str) -> dict | None:
+    user = current_user() or {}
+    sessions = active_exam_sessions(
+        user.get("username") if str(user.get("role", "")).lower() == "invigilator" else None
+    )
+    if not sessions:
+        return None
+    session = st.selectbox(
+        "Select Active Exam Session",
+        sessions,
+        format_func=lambda row: (
+            f"{row['course_code']} - {row['course_name']} | {row['venue']} | "
+            f"{row['exam_date']} {row.get('start_time') or ''}"
+        ),
+        key=key,
+    )
+    st.info(
+        f"Course: {session['course_code']} | Venue: {session['venue']} | "
+        f"Invigilator: {user.get('full_name') or user.get('username')} | Device: Streamlit web"
+    )
+    return session
+
+
 def unknown_badge() -> str:
     return '<span class="evs-status evs-status-unknown">Unknown student</span>'
 
@@ -861,7 +887,7 @@ def register_student_page() -> None:
 
 
 def verify_student_page() -> None:
-    session = active_exam_session()
+    session = selected_active_exam_session("verify_active_session")
     if session is None:
         page_header(
             "Verify Student",
@@ -1071,7 +1097,7 @@ def auto_identify_page() -> None:
         "Capture a live face, find the closest registered student, and check exam eligibility.",
         accent="#a78bfa",
     )
-    session = active_exam_session()
+    session = selected_active_exam_session("auto_active_session")
     if session is None:
         st.error("Activate an exam session before Auto Identify can approve exam entry.")
         return
@@ -1612,6 +1638,8 @@ def exam_sessions_page() -> None:
         program = st.text_input("Program")
         level = st.text_input("Exam level")
         exam_date = st.text_input("Exam date", placeholder="YYYY-MM-DD")
+        start_time = st.text_input("Start time", placeholder="HH:MM")
+        end_time = st.text_input("End time", placeholder="HH:MM")
         venue = st.text_input("Venue")
         if st.form_submit_button("Create exam session"):
             create_exam_session(
@@ -1620,6 +1648,8 @@ def exam_sessions_page() -> None:
                 program,
                 level,
                 exam_date,
+                start_time,
+                end_time,
                 venue,
                 st.session_state.get("username", "admin"),
             )
@@ -1643,6 +1673,27 @@ def exam_sessions_page() -> None:
             if middle.button("Complete", key=f"complete_{session['id']}"):
                 set_exam_session_status(session["id"], "completed")
                 st.rerun()
+            invigilators = list_invigilator_users()
+            if invigilators:
+                selected_invigilator = st.selectbox(
+                    "Assign invigilator",
+                    invigilators,
+                    format_func=lambda row: f"{row['full_name']} ({row['username']})",
+                    key=f"invigilator_{session['id']}",
+                )
+                session_role = st.selectbox(
+                    "Session role",
+                    ["lead", "support"],
+                    key=f"invigilator_role_{session['id']}",
+                )
+                if st.button("Assign selected invigilator", key=f"assign_{session['id']}"):
+                    assign_exam_session_invigilator(
+                        session["id"],
+                        selected_invigilator["username"],
+                        st.session_state.get("username", "admin"),
+                        session_role,
+                    )
+                    st.success("Invigilator assigned.")
             matching_students = [
                 row
                 for row in students

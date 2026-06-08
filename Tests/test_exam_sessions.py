@@ -15,7 +15,7 @@ os.environ["SUPER_ADMIN_PASSWORD"] = "Admin@12345"
 
 from fastapi.testclient import TestClient
 
-from backend.auth.security import create_access_token
+from backend.auth.security import create_access_token, hash_password
 from backend.database import SessionLocal, engine
 from backend.main import create_app
 from backend.models.tables import Student, User
@@ -29,6 +29,26 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         with SessionLocal() as db:
             admin = db.query(User).filter(User.username == "admin").first()
             cls.headers = {"Authorization": f"Bearer {create_access_token(admin)}"}
+            for username in ["invigilator_a", "invigilator_b", "invigilator_c"]:
+                user = db.query(User).filter(User.username == username).first()
+                if user is None:
+                    user = User(
+                        username=username,
+                        full_name=username.replace("_", " ").title(),
+                        email=f"{username}@example.com",
+                        role="Invigilator",
+                        account_status="approved",
+                        password_hash=hash_password("Verify@12345"),
+                        active=True,
+                    )
+                    db.add(user)
+                    db.commit()
+                setattr(
+                    cls,
+                    f"{username}_headers",
+                    {"Authorization": f"Bearer {create_access_token(user)}"},
+                )
+                setattr(cls, f"{username}_id", user.id)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -38,7 +58,7 @@ class ExamSessionEligibilityTests(unittest.TestCase):
 
     def setUp(self) -> None:
         with SessionLocal() as db:
-            for table in ["verification_logs", "exam_import_audits", "exam_session_students", "exam_sessions", "students"]:
+            for table in ["verification_logs", "exam_import_audits", "exam_session_invigilators", "exam_session_students", "exam_sessions", "students"]:
                 db.execute(__import__("sqlalchemy").text(f"DELETE FROM {table}"))
             db.commit()
             john = Student(
@@ -97,7 +117,7 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def verify(self, student_id: int | None, **overrides):
+    def verify(self, student_id: int | None, headers=None, **overrides):
         payload = {
             "detected_student_id": student_id,
             "match_score": 0.20,
@@ -105,11 +125,13 @@ class ExamSessionEligibilityTests(unittest.TestCase):
             "liveness_passed": True,
             "identity_matched": student_id is not None,
             "device_type": "desktop",
+            "device_id": "desk-a",
+            "device_name": "Room 116 Desk A",
         }
         payload.update(overrides)
         return self.client.post(
             f"/exam-sessions/{self.session_id}/verify",
-            headers=self.headers,
+            headers=headers or self.headers,
             json=payload,
         ).json()
 
@@ -242,6 +264,102 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["linked_count"], 1)
+
+    def test_multiple_sessions_can_be_active(self):
+        created = self.client.post(
+            "/exam-sessions",
+            headers=self.headers,
+            json={
+                "course_code": "BIT4400",
+                "course_name": "Advanced Systems",
+                "program": "BIT",
+                "level": "4",
+                "exam_date": "2026-06-10",
+                "venue": "Main Hall",
+            },
+        ).json()["exam_session"]
+        self.client.post(f"/exam-sessions/{created['id']}/activate", headers=self.headers)
+        active = self.client.get("/exam-sessions/active", headers=self.headers).json()["exam_sessions"]
+        self.assertEqual({row["course_code"] for row in active}, {"DBS220", "BIT4400"})
+
+    def test_assigned_invigilators_share_atomic_duplicate_state(self):
+        self.add(self.john_id)
+        for user_id in [self.invigilator_a_id, self.invigilator_b_id]:
+            self.client.post(
+                f"/exam-sessions/{self.session_id}/assign-invigilator",
+                headers=self.headers,
+                json={"invigilator_user_id": user_id, "role_in_session": "support"},
+            )
+        first = self.verify(self.john_id, headers=self.invigilator_a_headers)
+        second = self.verify(
+            self.john_id,
+            headers=self.invigilator_b_headers,
+            device_id="desk-b",
+            device_name="Room 116 Desk B",
+        )
+        self.assertEqual(first["decision"], "VERIFIED")
+        self.assertEqual(second["decision"], "ALREADY_VERIFIED")
+        self.assertEqual(second["verified_by"], "invigilator_a")
+        self.assertEqual(second["verified_device_id"], "desk-a")
+
+    def test_unassigned_invigilator_cannot_verify_assigned_session(self):
+        self.add(self.john_id)
+        self.client.post(
+            f"/exam-sessions/{self.session_id}/assign-invigilator",
+            headers=self.headers,
+            json={"invigilator_user_id": self.invigilator_a_id, "role_in_session": "lead"},
+        )
+        result = self.verify(self.john_id, headers=self.invigilator_c_headers)
+        self.assertIn("not assigned", result["reason"])
+
+    def test_assigned_to_me_filters_active_sessions(self):
+        self.client.post(
+            f"/exam-sessions/{self.session_id}/assign-invigilator",
+            headers=self.headers,
+            json={"invigilator_user_id": self.invigilator_a_id, "role_in_session": "lead"},
+        )
+        sessions = self.client.get(
+            "/exam-sessions/assigned-to-me",
+            headers=self.invigilator_a_headers,
+        ).json()["exam_sessions"]
+        self.assertEqual([row["id"] for row in sessions], [self.session_id])
+
+    def test_other_session_activity_returns_warning_without_blocking(self):
+        self.add(self.john_id)
+        self.assertEqual(self.verify(self.john_id)["decision"], "VERIFIED")
+        second = self.client.post(
+            "/exam-sessions",
+            headers=self.headers,
+            json={
+                "course_code": "DIT410",
+                "course_name": "Management Information Systems",
+                "program": "DIT",
+                "level": "4",
+                "exam_date": "2026-06-10",
+                "venue": "Room 116",
+            },
+        ).json()["exam_session"]
+        self.client.post(f"/exam-sessions/{second['id']}/activate", headers=self.headers)
+        self.client.post(
+            f"/exam-sessions/{second['id']}/eligible-students",
+            headers=self.headers,
+            json={"student_id": self.john_id, "eligibility_type": "regular"},
+        )
+        result = self.client.post(
+            f"/exam-sessions/{second['id']}/verify",
+            headers=self.headers,
+            json={
+                "detected_student_id": self.john_id,
+                "match_score": 0.20,
+                "confidence_gap": 0.12,
+                "liveness_passed": True,
+                "identity_matched": True,
+                "device_type": "desktop",
+                "device_id": "desk-c",
+            },
+        ).json()
+        self.assertEqual(result["decision"], "VERIFIED")
+        self.assertTrue(result["other_session_activity"])
 
     def test_unknown_face_denied(self):
         result = self.verify(None, identity_matched=False)

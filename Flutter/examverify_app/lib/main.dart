@@ -39,6 +39,26 @@ class AppConfig {
   );
 }
 
+class ExamVerifyDevice {
+  static String get name {
+    try {
+      return Platform.localHostname;
+    } catch (_) {
+      return 'ExamVerify device';
+    }
+  }
+
+  static String get id => AuthService.hashIdentifier(
+    '${Platform.operatingSystem}|$name',
+  ).substring(0, 32);
+
+  static String get type => Platform.isWindows
+      ? 'desktop'
+      : Platform.isAndroid || Platform.isIOS
+      ? 'mobile'
+      : 'web';
+}
+
 class ExamVerifyApp extends StatelessWidget {
   const ExamVerifyApp({
     this.skipPersistence = false,
@@ -267,7 +287,9 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
           );
           await store.replaceStudents(loadedStudents);
           loadedLogs = await client.listLogs();
-          loadedSessions = await client.listExamSessions();
+          loadedSessions = authUser?.role == 'Invigilator'
+              ? await client.listAssignedExamSessions()
+              : await client.listExamSessions();
           await store.replaceExamSessions(loadedSessions);
           for (final session in loadedSessions) {
             final rows = await client.listExamEligibilities(session.id);
@@ -463,6 +485,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         examEligibilities: examEligibilities,
         onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
+        authUser: authUser!,
       ),
       'Auto Identify' => AutoIdentifyPage(
         students: students,
@@ -470,6 +493,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         examEligibilities: examEligibilities,
         onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
+        authUser: authUser!,
       ),
       'Students' => StudentsPage(
         students: students,
@@ -481,6 +505,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         sessions: examSessions,
         client: onlineClient,
         onChanged: _loadData,
+        authUser: authUser!,
       ),
       'Evaluation' => EvaluationPage(
         logs: logs,
@@ -2992,6 +3017,7 @@ class VerifyPage extends StatefulWidget {
     required this.examEligibilities,
     required this.onVerificationSaved,
     this.onlineClient,
+    required this.authUser,
     super.key,
   });
 
@@ -3000,6 +3026,7 @@ class VerifyPage extends StatefulWidget {
   final List<ExamEligibilityRecord> examEligibilities;
   final Future<void> Function(VerificationRecord record) onVerificationSaved;
   final OnlineBackendClient? onlineClient;
+  final AuthUser authUser;
 
   @override
   State<VerifyPage> createState() => _VerifyPageState();
@@ -3056,6 +3083,20 @@ class _VerifyPageState extends State<VerifyPage> {
                     onChanged: (value) =>
                         setState(() => selectedSession = value),
                   ),
+                  if (widget.onlineClient == null) ...[
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Offline fallback: cross-device duplicate prevention is limited until synchronization.',
+                      style: TextStyle(color: AppColors.amber),
+                    ),
+                  ],
+                  if (selectedSession != null) ...[
+                    const SizedBox(height: 10),
+                    _SessionContextBanner(
+                      session: selectedSession!,
+                      user: widget.authUser,
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   DropdownButtonFormField<StudentRecord>(
                     initialValue: selectedStudent,
@@ -3281,7 +3322,7 @@ class _VerifyPageState extends State<VerifyPage> {
         resultStatus = finalStatus;
         resultScore = score;
         resultMessage = approved
-            ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${cloudDecision?.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.'
+            ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${cloudDecision?.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.${cloudDecision?.otherSessionActivity == true ? ' Warning: student has verification activity in another session.' : ''}'
             : cloudDecision != null
             ? cloudDecision.reason
             : !selectedIsBest
@@ -3325,6 +3366,7 @@ class AutoIdentifyPage extends StatefulWidget {
     required this.examEligibilities,
     required this.onVerificationSaved,
     this.onlineClient,
+    required this.authUser,
     super.key,
   });
 
@@ -3333,6 +3375,7 @@ class AutoIdentifyPage extends StatefulWidget {
   final List<ExamEligibilityRecord> examEligibilities;
   final Future<void> Function(VerificationRecord record) onVerificationSaved;
   final OnlineBackendClient? onlineClient;
+  final AuthUser authUser;
 
   @override
   State<AutoIdentifyPage> createState() => _AutoIdentifyPageState();
@@ -3387,6 +3430,20 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
                     onChanged: (value) =>
                         setState(() => selectedSession = value),
                   ),
+                  if (widget.onlineClient == null) ...[
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Offline fallback: cross-device duplicate prevention is limited until synchronization.',
+                      style: TextStyle(color: AppColors.amber),
+                    ),
+                  ],
+                  if (selectedSession != null) ...[
+                    const SizedBox(height: 10),
+                    _SessionContextBanner(
+                      session: selectedSession!,
+                      user: widget.authUser,
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   if (desktopCameraAvailable)
                     _DesktopAutoIdentifyKiosk(
@@ -3653,7 +3710,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
       final matchedName = bestStudent?.fullName ?? 'Student';
       final matchedNumber = bestStudent?.studentNumber ?? 'UNKNOWN';
       final message = approved
-          ? 'Verified $matchedName. Student ID $matchedNumber.'
+          ? 'Verified $matchedName. Student ID $matchedNumber.${cloudDecision?.otherSessionActivity == true ? ' Warning: student has verification activity in another session.' : ''}'
           : cloudDecision != null
           ? cloudDecision.reason
           : ranked.isEmpty
@@ -5250,12 +5307,41 @@ class _ExamSessionSelector extends StatelessWidget {
   }
 }
 
+class _SessionContextBanner extends StatelessWidget {
+  const _SessionContextBanner({required this.session, required this.user});
+
+  final ExamSessionRecord session;
+  final AuthUser user;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.cyan.withValues(alpha: 0.08),
+        border: Border.all(color: AppColors.cyan.withValues(alpha: 0.45)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        'Course: ${session.courseCode} | Venue: ${session.venue} | '
+        'Invigilator: ${user.fullName} | Device: ${ExamVerifyDevice.name}',
+        style: const TextStyle(
+          color: AppColors.soft,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
 class ExamSessionsPage extends StatefulWidget {
   const ExamSessionsPage({
     required this.students,
     required this.sessions,
     required this.client,
     required this.onChanged,
+    required this.authUser,
     super.key,
   });
 
@@ -5263,6 +5349,7 @@ class ExamSessionsPage extends StatefulWidget {
   final List<ExamSessionRecord> sessions;
   final OnlineBackendClient? client;
   final Future<void> Function() onChanged;
+  final AuthUser authUser;
 
   @override
   State<ExamSessionsPage> createState() => _ExamSessionsPageState();
@@ -5274,6 +5361,8 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
   final program = TextEditingController();
   final level = TextEditingController();
   final date = TextEditingController();
+  final startTime = TextEditingController();
+  final endTime = TextEditingController();
   final venue = TextEditingController();
   String? message;
   bool busy = false;
@@ -5285,6 +5374,8 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
     program.dispose();
     level.dispose();
     date.dispose();
+    startTime.dispose();
+    endTime.dispose();
     venue.dispose();
     super.dispose();
   }
@@ -5318,6 +5409,22 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                       decoration: const InputDecoration(
                         labelText: 'Course code',
                       ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: startTime,
+                      decoration: const InputDecoration(
+                        labelText: 'Start HH:MM',
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: endTime,
+                      decoration: const InputDecoration(labelText: 'End HH:MM'),
                     ),
                   ),
                   SizedBox(
@@ -5424,6 +5531,11 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                         child: const Text('View roster'),
                       ),
                       const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () => _assignInvigilator(session),
+                        child: const Text('Assign invigilator'),
+                      ),
+                      const SizedBox(width: 8),
                       FilledButton(
                         onPressed: () => _activate(session),
                         child: Text(session.isActive ? 'Active' : 'Activate'),
@@ -5452,8 +5564,8 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
         program: program.text.trim(),
         level: level.text.trim(),
         examDate: date.text.trim(),
-        startTime: '',
-        endTime: '',
+        startTime: startTime.text.trim(),
+        endTime: endTime.text.trim(),
         venue: venue.text.trim(),
       );
       await widget.onChanged();
@@ -5742,6 +5854,80 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _assignInvigilator(ExamSessionRecord session) async {
+    final users = await widget.client!.listUsers();
+    final invigilators = users
+        .where((row) => row['role'] == 'Invigilator')
+        .toList();
+    if (!mounted) return;
+    if (invigilators.isEmpty) {
+      setState(
+        () => message = 'No approved invigilator accounts are available.',
+      );
+      return;
+    }
+    Map<String, dynamic>? selected = invigilators.first;
+    var role = 'support';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Assign invigilator to ${session.courseCode}'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<Map<String, dynamic>>(
+                  initialValue: selected,
+                  decoration: const InputDecoration(labelText: 'Invigilator'),
+                  items: [
+                    for (final user in invigilators)
+                      DropdownMenuItem(
+                        value: user,
+                        child: Text(
+                          '${user['full_name']} (${user['username']})',
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) => setDialogState(() => selected = value),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: role,
+                  decoration: const InputDecoration(labelText: 'Session role'),
+                  items: const [
+                    DropdownMenuItem(value: 'lead', child: Text('Lead')),
+                    DropdownMenuItem(value: 'support', child: Text('Support')),
+                  ],
+                  onChanged: (value) =>
+                      setDialogState(() => role = value ?? 'support'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Assign'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || selected == null) return;
+    await widget.client!.assignInvigilator(
+      session.id,
+      (selected!['id'] as num).toInt(),
+      role,
+    );
+    setState(() => message = 'Invigilator assigned to ${session.courseCode}.');
   }
 }
 
@@ -8524,11 +8710,13 @@ class ExamEntryDecision {
     required this.decision,
     required this.reason,
     this.eligibilityType,
+    this.otherSessionActivity = false,
   });
 
   final String decision;
   final String reason;
   final String? eligibilityType;
+  final bool otherSessionActivity;
   bool get verified => decision == 'VERIFIED';
 }
 
@@ -9895,6 +10083,34 @@ class OnlineBackendClient {
     ];
   }
 
+  Future<List<ExamSessionRecord>> listAssignedExamSessions() async {
+    final response = await _getJson('/exam-sessions/assigned-to-me');
+    final rows = response['exam_sessions'] as List;
+    return [
+      for (final row in rows)
+        ExamSessionRecord.fromMap(row as Map<String, dynamic>),
+    ];
+  }
+
+  Future<List<Map<String, dynamic>>> listUsers() async {
+    final response = await _getJson('/admin/users');
+    return [
+      for (final row in response['users'] as List)
+        Map<String, dynamic>.from(row as Map),
+    ];
+  }
+
+  Future<void> assignInvigilator(
+    int sessionId,
+    int invigilatorUserId,
+    String role,
+  ) async {
+    await _postJson('/exam-sessions/$sessionId/assign-invigilator', {
+      'invigilator_user_id': invigilatorUserId,
+      'role_in_session': role,
+    });
+  }
+
   Future<List<ExamEligibilityRecord>> listExamEligibilities(
     int sessionId,
   ) async {
@@ -10025,11 +10241,15 @@ class OnlineBackendClient {
       'liveness_passed': livenessPassed,
       'identity_matched': identityMatched,
       'device_type': deviceType,
+      'device_id': ExamVerifyDevice.id,
+      'device_name': ExamVerifyDevice.name,
     });
     return ExamEntryDecision(
       decision: response['decision'] as String,
       reason: response['reason'] as String? ?? '',
       eligibilityType: response['eligibility_type'] as String?,
+      otherSessionActivity:
+          response['other_session_activity'] as bool? ?? false,
     );
   }
 

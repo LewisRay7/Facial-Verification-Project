@@ -103,6 +103,15 @@ def _ensure_exam_session_columns() -> None:
         "device_type": "ALTER TABLE verification_logs ADD COLUMN device_type VARCHAR(40) NOT NULL DEFAULT ''",
         "venue": "ALTER TABLE verification_logs ADD COLUMN venue VARCHAR(180) NOT NULL DEFAULT ''",
     }
+    eligibility_columns = {
+        column["name"] for column in inspector.get_columns("exam_session_students")
+    }
+    eligibility_migrations = {
+        "verified_device_id": (
+            "ALTER TABLE exam_session_students "
+            "ADD COLUMN verified_device_id VARCHAR(120)"
+        ),
+    }
     statements.extend(
         statement
         for column, statement in student_migrations.items()
@@ -112,6 +121,11 @@ def _ensure_exam_session_columns() -> None:
         statement
         for column, statement in log_migrations.items()
         if column not in log_columns
+    )
+    statements.extend(
+        statement
+        for column, statement in eligibility_migrations.items()
+        if column not in eligibility_columns
     )
     if statements:
         with engine.begin() as connection:

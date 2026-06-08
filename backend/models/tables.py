@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
@@ -85,6 +85,9 @@ class ExamSession(Base):
     eligible_students: Mapped[list["ExamSessionStudent"]] = relationship(
         back_populates="exam_session", cascade="all, delete-orphan"
     )
+    invigilators: Mapped[list["ExamSessionInvigilator"]] = relationship(
+        back_populates="exam_session", cascade="all, delete-orphan"
+    )
 
 
 class ExamSessionStudent(Base):
@@ -100,12 +103,47 @@ class ExamSessionStudent(Base):
     attendance_status: Mapped[str] = mapped_column(String(30), default="not_verified")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     verified_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    verified_device_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     exam_session: Mapped[ExamSession] = relationship(back_populates="eligible_students")
     student: Mapped[Student] = relationship(back_populates="exam_eligibilities")
+
+
+class ExamSessionInvigilator(Base):
+    __tablename__ = "exam_session_invigilators"
+    __table_args__ = (
+        UniqueConstraint(
+            "exam_session_id",
+            "invigilator_user_id",
+            name="uq_exam_session_invigilator",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exam_session_id: Mapped[int] = mapped_column(
+        ForeignKey("exam_sessions.id"), index=True
+    )
+    invigilator_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    assigned_by: Mapped[str] = mapped_column(String(80), default="")
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    role_in_session: Mapped[str] = mapped_column(String(30), default="support")
+
+    exam_session: Mapped[ExamSession] = relationship(back_populates="invigilators")
+    invigilator: Mapped[User] = relationship()
+
+
+class Device(Base):
+    __tablename__ = "devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String(180), default="")
+    device_type: Mapped[str] = mapped_column(String(40), default="")
+    assigned_room: Mapped[str] = mapped_column(String(180), default="")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class ExamImportAudit(Base):

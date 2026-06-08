@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 
 from backend.auth.security import require_roles
 from backend.database import get_db
@@ -19,9 +20,12 @@ from backend.models.schemas import (
     ExamEntryEvaluateIn,
     ExamSessionCreate,
     ExamSessionUpdate,
+    InvigilatorAssignmentIn,
 )
 from backend.models.tables import (
+    Device,
     ExamSession,
+    ExamSessionInvigilator,
     ExamSessionStudent,
     ExamImportAudit,
     Student,
@@ -62,6 +66,25 @@ def active_exam_sessions(
 ) -> dict:
     rows = db.query(ExamSession).filter(ExamSession.status == "active").order_by(ExamSession.course_code).all()
     return {"ok": True, "exam_sessions": [_session_dict(row) for row in rows]}
+
+
+@router.get("/assigned-to-me")
+def assigned_exam_sessions(
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin", "Invigilator"))],
+) -> dict:
+    active = db.query(ExamSession).filter(ExamSession.status == "active")
+    assignments_exist = db.query(ExamSessionInvigilator.id).first() is not None
+    if actor.role == "Invigilator" and assignments_exist:
+        active = active.join(ExamSessionInvigilator).filter(
+            ExamSessionInvigilator.invigilator_user_id == actor.id
+        )
+    rows = active.order_by(ExamSession.course_code).all()
+    return {
+        "ok": True,
+        "assignment_filter_active": actor.role == "Invigilator" and assignments_exist,
+        "exam_sessions": [_session_dict(row) for row in rows],
+    }
 
 
 @router.get("/{session_id}")
@@ -116,6 +139,53 @@ def complete_exam_session(
     log_event(db, actor_username=actor.username, action="EXAM_SESSION_COMPLETED", target=str(session_id))
     db.commit()
     return {"ok": True, "exam_session": _session_dict(row)}
+
+
+@router.post("/{session_id}/assign-invigilator")
+def assign_invigilator(
+    session_id: int,
+    payload: InvigilatorAssignmentIn,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    _session_or_404(db, session_id)
+    invigilator = db.query(User).filter(
+        User.id == payload.invigilator_user_id,
+        User.role == "Invigilator",
+        User.active.is_(True),
+        User.account_status == "approved",
+    ).first()
+    if invigilator is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approved invigilator not found")
+    row = db.query(ExamSessionInvigilator).filter(
+        ExamSessionInvigilator.exam_session_id == session_id,
+        ExamSessionInvigilator.invigilator_user_id == invigilator.id,
+    ).first()
+    if row is None:
+        row = ExamSessionInvigilator(
+            exam_session_id=session_id,
+            invigilator_user_id=invigilator.id,
+            assigned_by=actor.username,
+        )
+        db.add(row)
+    row.role_in_session = payload.role_in_session
+    log_event(db, actor_username=actor.username, action="INVIGILATOR_ASSIGNED", target=invigilator.username)
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "assignment": _assignment_dict(row)}
+
+
+@router.get("/{session_id}/invigilators")
+def list_session_invigilators(
+    session_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(require_roles("Super Admin", "Admin", "Invigilator"))],
+) -> dict:
+    _session_or_404(db, session_id)
+    rows = db.query(ExamSessionInvigilator).filter(
+        ExamSessionInvigilator.exam_session_id == session_id
+    ).all()
+    return {"ok": True, "invigilators": [_assignment_dict(row) for row in rows]}
 
 
 @router.post("/{session_id}/eligible-students")
@@ -370,8 +440,17 @@ def evaluate_exam_entry(
         ExamSessionStudent.exam_session_id == session_id,
         ExamSessionStudent.student_id == payload.detected_student_id,
     ).first() if payload.detected_student_id else None
+    session_has_assignments = db.query(ExamSessionInvigilator.id).filter(
+        ExamSessionInvigilator.exam_session_id == session_id
+    ).first() is not None
+    actor_is_assigned = db.query(ExamSessionInvigilator.id).filter(
+        ExamSessionInvigilator.exam_session_id == session_id,
+        ExamSessionInvigilator.invigilator_user_id == actor.id,
+    ).first() is not None
 
-    if session.status != "active":
+    if actor.role == "Invigilator" and session_has_assignments and not actor_is_assigned:
+        reason = "Invigilator is not assigned to the selected exam session."
+    elif session.status != "active":
         reason = "No active exam session selected."
     elif not payload.liveness_passed:
         reason = "Liveness failed."
@@ -391,25 +470,54 @@ def evaluate_exam_entry(
         reason = "Student blocked from this exam session."
     elif eligibility.attendance_status == "verified" and not payload.admin_override:
         decision = "ALREADY_VERIFIED"
-        reason = f"Student was already verified for this exam session at {eligibility.verified_at}."
+        reason = _already_verified_reason(eligibility)
     elif payload.admin_override and actor.role not in {"Super Admin", "Admin"}:
         reason = "Only an Admin or Super Admin may override a previous verification."
     elif payload.admin_override and not payload.override_reason.strip():
         reason = "Admin override requires a reason."
     else:
-        decision = "VERIFIED"
-        reason = "Identity, liveness, and exam-session eligibility confirmed."
-        eligibility.attendance_status = "verified"
-        eligibility.verified_at = datetime.utcnow()
-        eligibility.verified_by = actor.username
-        if payload.admin_override:
-            eligibility.eligibility_type = "manual_override"
-            eligibility.notes = payload.override_reason.strip()
+        now = datetime.utcnow()
+        updated = db.execute(
+            update(ExamSessionStudent)
+            .where(
+                ExamSessionStudent.id == eligibility.id,
+                ExamSessionStudent.attendance_status != "verified",
+            )
+            .values(
+                attendance_status="verified",
+                verified_at=now,
+                verified_by=actor.username,
+                verified_device_id=payload.device_id,
+                updated_at=now,
+            )
+        ).rowcount
+        if updated:
+            decision = "VERIFIED"
+            reason = "Identity, liveness, and exam-session eligibility confirmed."
+            eligibility.attendance_status = "verified"
+            eligibility.verified_at = now
+            eligibility.verified_by = actor.username
+            eligibility.verified_device_id = payload.device_id
+            if payload.admin_override:
+                eligibility.eligibility_type = "manual_override"
+                eligibility.notes = payload.override_reason.strip()
+        else:
+            db.refresh(eligibility)
+            decision = "ALREADY_VERIFIED"
+            reason = _already_verified_reason(eligibility)
+
+    if eligibility is not None and decision not in {"VERIFIED", "ALREADY_VERIFIED"}:
+        eligibility.attendance_status = "denied"
         eligibility.updated_at = datetime.utcnow()
 
-    if eligibility is not None and decision != "VERIFIED":
-        eligibility.attendance_status = "already_verified" if decision == "ALREADY_VERIFIED" else "denied"
-        eligibility.updated_at = datetime.utcnow()
+    other_session_activity = False
+    if student is not None:
+        other_session_activity = db.query(VerificationLog.id).filter(
+            VerificationLog.student_id == student.id,
+            VerificationLog.exam_session_id != session.id,
+            VerificationLog.decision == "VERIFIED",
+        ).first() is not None
+    device = _touch_device(db, payload, session)
 
     log = VerificationLog(
         student_id=student.id if student else None,
@@ -427,13 +535,24 @@ def evaluate_exam_entry(
         eligibility_type=eligibility.eligibility_type if eligibility else "",
         verified_by=actor.username,
         device_type=payload.device_type,
+        device_id=payload.device_id,
         venue=session.venue,
-        metadata_json=json.dumps({"admin_override": payload.admin_override}, sort_keys=True),
+        metadata_json=json.dumps(
+            {
+                "admin_override": payload.admin_override,
+                "other_session_activity": other_session_activity,
+                "device_name": device.device_name if device else payload.device_name,
+            },
+            sort_keys=True,
+        ),
     )
     db.add(log)
     log_event(db, actor_username=actor.username, action="EXAM_ENTRY_DECISION", target=str(session_id), metadata={"decision": decision, "reason": reason})
     db.commit()
-    return _decision_dict(decision, reason, session, student, eligibility, payload)
+    return _decision_dict(
+        decision, reason, session, student, eligibility, payload,
+        other_session_activity=other_session_activity,
+    )
 
 
 @router.get("/{session_id}/logs")
@@ -473,7 +592,8 @@ def _eligibility_dict(row: ExamSessionStudent) -> dict:
         "eligibility_type": row.eligibility_type, "eligibility_status": row.eligibility_status,
         "attendance_status": row.attendance_status,
         "verified_at": row.verified_at.isoformat() if row.verified_at else None,
-        "verified_by": row.verified_by, "notes": row.notes,
+        "verified_by": row.verified_by, "verified_device_id": row.verified_device_id,
+        "notes": row.notes,
     }
 
 
@@ -529,7 +649,7 @@ def _import_audit_dict(row: ExamImportAudit) -> dict:
     }
 
 
-def _decision_dict(decision: str, reason: str, session: ExamSession, student: Student | None, eligibility: ExamSessionStudent | None, payload: ExamEntryEvaluateIn) -> dict:
+def _decision_dict(decision: str, reason: str, session: ExamSession, student: Student | None, eligibility: ExamSessionStudent | None, payload: ExamEntryEvaluateIn, other_session_activity: bool = False) -> dict:
     return {
         "ok": True, "decision": decision, "student_id": student.id if student else None,
         "student_name": student.full_name if student else None,
@@ -538,6 +658,10 @@ def _decision_dict(decision: str, reason: str, session: ExamSession, student: St
         "liveness_passed": payload.liveness_passed, "reason": reason,
         "eligibility_type": eligibility.eligibility_type if eligibility else None,
         "exam_session_id": session.id,
+        "verified_at": eligibility.verified_at.isoformat() if eligibility and eligibility.verified_at else None,
+        "verified_by": eligibility.verified_by if eligibility else None,
+        "verified_device_id": eligibility.verified_device_id if eligibility else None,
+        "other_session_activity": other_session_activity,
     }
 
 
@@ -551,3 +675,38 @@ def _log_dict(row: VerificationLog) -> dict:
         "eligibility_type": row.eligibility_type, "verified_by": row.verified_by,
         "device_type": row.device_type, "venue": row.venue,
     }
+
+
+def _assignment_dict(row: ExamSessionInvigilator) -> dict:
+    return {
+        "id": row.id,
+        "exam_session_id": row.exam_session_id,
+        "invigilator_user_id": row.invigilator_user_id,
+        "invigilator_username": row.invigilator.username,
+        "invigilator_name": row.invigilator.full_name,
+        "assigned_by": row.assigned_by,
+        "assigned_at": row.assigned_at.isoformat(),
+        "role_in_session": row.role_in_session,
+    }
+
+
+def _already_verified_reason(row: ExamSessionStudent) -> str:
+    return (
+        f"Student was already verified at {row.verified_at} by "
+        f"{row.verified_by or 'another invigilator'} on "
+        f"{row.verified_device_id or 'another device'}."
+    )
+
+
+def _touch_device(db: Session, payload: ExamEntryEvaluateIn, session: ExamSession) -> Device | None:
+    if not payload.device_id.strip():
+        return None
+    row = db.query(Device).filter(Device.device_id == payload.device_id).first()
+    if row is None:
+        row = Device(device_id=payload.device_id)
+        db.add(row)
+    row.device_name = payload.device_name.strip() or payload.device_id
+    row.device_type = payload.device_type
+    row.assigned_room = session.venue
+    row.last_seen_at = datetime.utcnow()
+    return row

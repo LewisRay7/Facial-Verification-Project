@@ -94,6 +94,15 @@ def me(user: Annotated[User, Depends(current_user)]) -> dict:
     return {"ok": True, "user": user_payload(user)}
 
 
+@router.get("/users")
+def list_users(
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    rows = db.query(User).filter(User.active.is_(True)).order_by(User.full_name).all()
+    return {"ok": True, "users": [user_payload(row) for row in rows]}
+
+
 def _request_to_dict(row: AdminRequest) -> dict:
     return {
         "id": row.id,

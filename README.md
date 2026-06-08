@@ -86,6 +86,13 @@ biometric profiles. They never create students, portraits, or embeddings.
 Unmatched identifiers and students without a face profile appear in the import
 review report and cannot be verified until biometric enrollment is completed.
 
+Exam sessions are prepared by administrators before examinations. Invigilators
+select their assigned active session and verify only students linked to that
+session. Multiple invigilators can work simultaneously because cloud decisions
+are tied to the session, venue, device, and invigilator account, and attendance
+is marked using an atomic conditional update. Offline mode is a last-resort
+fallback and cannot guarantee cross-device duplicate prevention until sync.
+
 ## Setup
 
 Install Python 3.10 or 3.11 first. During installation, tick "Add Python to PATH".

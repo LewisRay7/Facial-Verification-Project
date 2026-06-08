@@ -38,6 +38,9 @@ level alone. This supports regular, repeat, deferred, supplementary, and
 administrator-approved students without requiring biometric re-enrollment.
 CSV/XLSX eligibility imports match the existing peppered student identifier and
 never generate or replace biometric data.
+Multiple assigned invigilators can operate one or more active sessions at the
+same time. Neon/PostgreSQL is the online authority for atomic duplicate
+prevention and session-specific verification logs.
 
 ## Render
 

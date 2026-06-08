@@ -106,6 +106,11 @@ class EligibleStudentAdd(BaseModel):
     notes: str = ""
 
 
+class InvigilatorAssignmentIn(BaseModel):
+    invigilator_user_id: int
+    role_in_session: Literal["lead", "support"] = "support"
+
+
 class ExamEntryEvaluateIn(BaseModel):
     detected_student_id: int | None = None
     match_score: float = 1.0
@@ -115,6 +120,8 @@ class ExamEntryEvaluateIn(BaseModel):
     liveness_passed: bool = False
     identity_matched: bool = False
     device_type: Literal["mobile", "desktop", "web"] = "desktop"
+    device_id: str = ""
+    device_name: str = ""
     admin_override: bool = False
     override_reason: str = ""
 
