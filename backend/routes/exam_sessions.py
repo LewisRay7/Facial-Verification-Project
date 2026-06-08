@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import csv
+from io import BytesIO, StringIO
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
 from backend.auth.security import require_roles
 from backend.database import get_db
 from backend.logs.audit import log_event
+from backend.security.data_encryption import hash_student_identifier
 from backend.models.schemas import (
     EligibleStudentAdd,
     ExamEntryEvaluateIn,
@@ -19,6 +23,7 @@ from backend.models.schemas import (
 from backend.models.tables import (
     ExamSession,
     ExamSessionStudent,
+    ExamImportAudit,
     Student,
     User,
     VerificationLog,
@@ -152,6 +157,136 @@ def list_eligible_students(
     return {"ok": True, "eligible_students": [_eligibility_dict(row) for row in rows]}
 
 
+@router.post("/{session_id}/eligible-students/import")
+async def import_eligible_students(
+    session_id: int,
+    file: UploadFile,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    session = _session_or_404(db, session_id)
+    filename = file.filename or "eligible-students.csv"
+    content = await file.read()
+    rows = _read_import_rows(filename, content)
+    review: list[dict] = []
+    counts = {
+        "total_rows": len(rows),
+        "linked_count": 0,
+        "already_added_count": 0,
+        "unmatched_count": 0,
+        "no_face_count": 0,
+        "duplicate_count": 0,
+        "invalid_count": 0,
+    }
+    seen_numbers: set[str] = set()
+
+    for raw in rows:
+        student_number = str(raw.get("student_number") or "").strip().upper()
+        full_name = str(raw.get("full_name") or "").strip()
+        eligibility_type = str(raw.get("eligibility_type") or "regular").strip().lower()
+        notes = str(raw.get("notes") or "").strip()
+        result = {
+            "student_number": student_number,
+            "full_name": full_name,
+            "issue": "",
+            "suggested_action": "",
+        }
+        if not student_number:
+            result.update(issue="Invalid student number", suggested_action="Correct student number")
+            counts["invalid_count"] += 1
+            review.append(result)
+            continue
+        if student_number in seen_numbers:
+            result.update(issue="Duplicate row", suggested_action="Ignore")
+            counts["duplicate_count"] += 1
+            review.append(result)
+            continue
+        seen_numbers.add(student_number)
+        if eligibility_type not in {
+            "regular", "repeat", "deferred", "supplementary", "manual_override"
+        }:
+            result.update(issue="Invalid eligibility type", suggested_action="Correct eligibility type")
+            counts["invalid_count"] += 1
+            review.append(result)
+            continue
+        student_hash = hash_student_identifier(student_number)
+        student = db.query(Student).filter(Student.student_number_hash == student_hash).first()
+        if student is None:
+            result.update(
+                issue="Student not found in biometric database",
+                suggested_action="Register face first or correct student number",
+            )
+            counts["unmatched_count"] += 1
+            review.append(result)
+            continue
+        if not _student_has_face(student):
+            result.update(
+                full_name=student.full_name,
+                issue="Student exists but face not enrolled",
+                suggested_action="Register face first",
+            )
+            counts["no_face_count"] += 1
+            review.append(result)
+            continue
+        existing = db.query(ExamSessionStudent).filter(
+            ExamSessionStudent.exam_session_id == session_id,
+            ExamSessionStudent.student_id == student.id,
+        ).first()
+        if existing is not None:
+            result.update(
+                full_name=student.full_name,
+                issue="Already linked to session",
+                suggested_action="Ignore",
+            )
+            counts["already_added_count"] += 1
+            review.append(result)
+            continue
+        db.add(
+            ExamSessionStudent(
+                exam_session_id=session_id,
+                student_id=student.id,
+                eligibility_type=eligibility_type,
+                eligibility_status="eligible",
+                notes=notes or f"Imported from {filename}.",
+            )
+        )
+        counts["linked_count"] += 1
+
+    audit = ExamImportAudit(
+        exam_session_id=session_id,
+        imported_by=actor.username,
+        filename=filename,
+        review_json=json.dumps(review),
+        **{key: counts[key] for key in (
+            "total_rows", "linked_count", "unmatched_count", "no_face_count",
+            "duplicate_count", "invalid_count",
+        )},
+    )
+    db.add(audit)
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="EXAM_ELIGIBILITY_IMPORTED",
+        target=session.course_code,
+        metadata={"filename": filename, **counts},
+    )
+    db.commit()
+    return {"ok": True, "filename": filename, **counts, "review": review}
+
+
+@router.get("/{session_id}/eligible-students/imports")
+def list_eligibility_imports(
+    session_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(require_roles("Super Admin", "Admin", "Invigilator"))],
+) -> dict:
+    _session_or_404(db, session_id)
+    rows = db.query(ExamImportAudit).filter(
+        ExamImportAudit.exam_session_id == session_id
+    ).order_by(ExamImportAudit.created_at.desc()).all()
+    return {"ok": True, "imports": [_import_audit_dict(row) for row in rows]}
+
+
 @router.post("/{session_id}/eligible-students/from-cohort")
 def add_matching_cohort(
     session_id: int,
@@ -167,6 +302,8 @@ def add_matching_cohort(
 
     added = 0
     for student in query.all():
+        if not _student_has_face(student):
+            continue
         existing = db.query(ExamSessionStudent).filter(
             ExamSessionStudent.exam_session_id == session_id,
             ExamSessionStudent.student_id == student.id,
@@ -244,6 +381,8 @@ def evaluate_exam_entry(
         reason = "Similarity gap too small / ambiguous identity."
     elif not payload.identity_matched or student is None:
         reason = "Face not recognized."
+    elif not _student_has_face(student):
+        reason = "Cannot verify until face enrollment is completed."
     elif student.status != "active" or not student.active:
         reason = "Student inactive or suspended."
     elif eligibility is None:
@@ -330,10 +469,63 @@ def _eligibility_dict(row: ExamSessionStudent) -> dict:
         "id": row.id, "exam_session_id": row.exam_session_id, "student_id": row.student_id,
         "student_number_mask": student.student_number_mask, "student_name": student.full_name,
         "program": student.program, "level": student.level, "student_status": student.status,
+        "biometric_status": "face_enrolled" if _student_has_face(student) else "no_face",
         "eligibility_type": row.eligibility_type, "eligibility_status": row.eligibility_status,
         "attendance_status": row.attendance_status,
         "verified_at": row.verified_at.isoformat() if row.verified_at else None,
         "verified_by": row.verified_by, "notes": row.notes,
+    }
+
+
+def _student_has_face(student: Student) -> bool:
+    from backend.security.data_encryption import decrypt_json
+
+    try:
+        profile = decrypt_json(student.biometric_profile_json or "{}")
+    except Exception:
+        return False
+    signature = profile.get("signature")
+    return bool(signature and isinstance(signature, list))
+
+
+def _read_import_rows(filename: str, content: bytes) -> list[dict]:
+    suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if suffix == "csv":
+        text = content.decode("utf-8-sig")
+        return [
+            {str(key).strip().lower(): value for key, value in row.items()}
+            for row in csv.DictReader(StringIO(text))
+        ]
+    if suffix == "xlsx":
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        sheet = workbook.active
+        values = sheet.iter_rows(values_only=True)
+        headers = [str(value or "").strip().lower() for value in next(values, ())]
+        return [
+            {headers[index]: value for index, value in enumerate(row) if index < len(headers)}
+            for row in values
+            if any(value is not None and str(value).strip() for value in row)
+        ]
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Only CSV and XLSX eligibility files are supported.",
+    )
+
+
+def _import_audit_dict(row: ExamImportAudit) -> dict:
+    return {
+        "id": row.id,
+        "exam_session_id": row.exam_session_id,
+        "imported_by": row.imported_by,
+        "filename": row.filename,
+        "total_rows": row.total_rows,
+        "linked_count": row.linked_count,
+        "unmatched_count": row.unmatched_count,
+        "no_face_count": row.no_face_count,
+        "duplicate_count": row.duplicate_count,
+        "invalid_count": row.invalid_count,
+        "review": json.loads(row.review_json or "[]"),
+        "created_at": row.created_at.isoformat(),
     }
 
 

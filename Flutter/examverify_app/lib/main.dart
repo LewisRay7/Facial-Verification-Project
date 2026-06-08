@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:camera/camera.dart' as camera;
 import 'package:crypto/crypto.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -3193,6 +3194,14 @@ class _VerifyPageState extends State<VerifyPage> {
         return;
       }
       final liveSignature = await FaceEngine.createSignature(storedLivePhoto);
+      final eligibleStudentIds = widget.examEligibilities
+          .where(
+            (row) =>
+                row.examSessionId == session.id &&
+                row.eligibilityStatus == 'eligible',
+          )
+          .map((row) => row.studentId)
+          .toSet();
       if (!FaceEngine.canCompareSignatures(student.signature, liveSignature)) {
         throw FaceEngineException(
           'This student does not have a compatible MobileFaceNet profile. Sync or re-enroll the student using the mobile scanner.',
@@ -3200,14 +3209,15 @@ class _VerifyPageState extends State<VerifyPage> {
       }
       final ranked = [
         for (final candidate in widget.students)
-          if (FaceEngine.canCompareSignatures(
-            candidate.signature,
-            liveSignature,
-          ))
-            MapEntry(
-              candidate,
-              FaceEngine.distance(candidate.signature, liveSignature),
-            ),
+          if (candidate.id != null && eligibleStudentIds.contains(candidate.id))
+            if (FaceEngine.canCompareSignatures(
+              candidate.signature,
+              liveSignature,
+            ))
+              MapEntry(
+                candidate,
+                FaceEngine.distance(candidate.signature, liveSignature),
+              ),
       ]..sort((a, b) => a.value.compareTo(b.value));
       final selectedMatch = ranked.firstWhere(
         (match) => match.key.studentNumber == student.studentNumber,
@@ -3539,8 +3549,24 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         }
       }
       final liveSignature = await FaceEngine.createSignature(storedLivePhoto);
+      final eligibleStudentIds = widget.examEligibilities
+          .where(
+            (row) =>
+                row.examSessionId == session.id &&
+                row.eligibilityStatus == 'eligible',
+          )
+          .map((row) => row.studentId)
+          .toSet();
+      final eligibleStudents = widget.students
+          .where(
+            (student) =>
+                student.id != null &&
+                eligibleStudentIds.contains(student.id) &&
+                student.status == 'active',
+          )
+          .toList();
       final ranked = [
-        for (final student in widget.students)
+        for (final student in eligibleStudents)
           if (FaceEngine.canCompareSignatures(student.signature, liveSignature))
             MapEntry(
               student,
@@ -3588,6 +3614,27 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
               deviceType: Platform.isWindows ? 'desktop' : 'mobile',
             );
       final approved = cloudDecision?.verified ?? sessionAllowed;
+      StudentRecord? globallyMatchedStudent;
+      if (!approved) {
+        final globalRanked = [
+          for (final student in widget.students)
+            if (FaceEngine.canCompareSignatures(
+              student.signature,
+              liveSignature,
+            ))
+              MapEntry(
+                student,
+                FaceEngine.distance(student.signature, liveSignature),
+              ),
+        ]..sort((a, b) => a.value.compareTo(b.value));
+        if (globalRanked.isNotEmpty &&
+            globalRanked.first.value <= FaceEngine.identificationThreshold &&
+            (globalRanked.length == 1 ||
+                globalRanked[1].value - globalRanked.first.value >=
+                    FaceEngine.identificationMinimumGap)) {
+          globallyMatchedStudent = globalRanked.first.key;
+        }
+      }
       await widget.onVerificationSaved(
         VerificationRecord(
           time: DateTime.now(),
@@ -3617,6 +3664,8 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           ? 'Access denied: $matchedName is registered but not eligible for ${session.courseCode}.'
           : bestStudent != null && eligibility?.attendanceStatus == 'verified'
           ? 'Already verified: $matchedName was already verified for ${session.courseCode}.'
+          : globallyMatchedStudent != null
+          ? 'Access denied: ${globallyMatchedStudent.fullName} is recognized but not eligible for ${session.courseCode}.'
           : 'Unauthorized: no trusted student profile matched this scan.';
       if (mounted) {
         setState(() {
@@ -5344,6 +5393,14 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                               '${session.program} Level ${session.level} | ${session.examDate} | ${session.status}',
                               style: const TextStyle(color: AppColors.muted),
                             ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Matching cohort links already face-enrolled students with the same program and level. Use Add Exception for repeat, deferred, or supplementary students.',
+                              style: TextStyle(
+                                color: AppColors.muted,
+                                fontSize: 12,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -5355,6 +5412,16 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                       OutlinedButton(
                         onPressed: () => _addMatchingCohort(session),
                         child: const Text('Add matching cohort'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () => _importEligibleList(session),
+                        child: const Text('Import eligible list'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () => _showRoster(session),
+                        child: const Text('View roster'),
                       ),
                       const SizedBox(width: 8),
                       FilledButton(
@@ -5422,6 +5489,7 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
           });
     StudentRecord? student = candidates.firstOrNull;
     var eligibilityType = 'regular';
+    var notes = '';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -5471,6 +5539,13 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                     () => eligibilityType = value ?? 'regular',
                   ),
                 ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  decoration: const InputDecoration(
+                    labelText: 'Reason / notes',
+                  ),
+                  onChanged: (value) => notes = value,
+                ),
               ],
             ),
           ),
@@ -5488,10 +5563,17 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
       ),
     );
     if (confirmed != true || student?.id == null) return;
+    if (eligibilityType != 'regular' && notes.trim().isEmpty) {
+      setState(
+        () => message = 'A reason is required when adding an exception.',
+      );
+      return;
+    }
     await widget.client!.addExamEligibility(
       sessionId: session.id,
       studentId: student!.id!,
       eligibilityType: eligibilityType,
+      notes: notes.trim(),
     );
     await widget.onChanged();
   }
@@ -5512,6 +5594,154 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+
+  Future<void> _importEligibleList(ExamSessionRecord session) async {
+    final picked = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['csv', 'xlsx'],
+      withData: true,
+    );
+    final file = picked?.files.firstOrNull;
+    if (file == null) return;
+    setState(() => busy = true);
+    try {
+      final report = await widget.client!.importExamEligibility(
+        sessionId: session.id,
+        filename: file.name,
+        bytes: file.bytes,
+        path: file.path,
+      );
+      await widget.onChanged();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Import Review / Unmatched Students'),
+          content: SizedBox(
+            width: 720,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Rows ${report.totalRows} | Linked ${report.linked} | Already added ${report.alreadyAdded} | Unmatched ${report.unmatched} | No face ${report.noFace} | Invalid ${report.invalid + report.duplicates}',
+                  ),
+                  const SizedBox(height: 16),
+                  for (final row in report.review)
+                    ListTile(
+                      dense: true,
+                      title: Text(
+                        '${row['student_number'] ?? ''} ${row['full_name'] ?? ''}',
+                      ),
+                      subtitle: Text(
+                        '${row['issue'] ?? ''} - ${row['suggested_action'] ?? ''}',
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => message = error.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _showRoster(ExamSessionRecord session) async {
+    final roster = await widget.client!.listExamEligibilities(session.id);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${session.courseCode} eligible roster'),
+        content: SizedBox(
+          width: 760,
+          child: roster.isEmpty
+              ? const Text('No students are linked to this exam session.')
+              : ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final eligibility in roster)
+                      Builder(
+                        builder: (context) {
+                          final student = widget.students.firstWhereOrNull(
+                            (row) => row.id == eligibility.studentId,
+                          );
+                          final faceStatus =
+                              student?.signature.isNotEmpty == true
+                              ? 'Face Enrolled'
+                              : 'No Face';
+                          return ListTile(
+                            title: Text(
+                              '${student?.studentNumber ?? eligibility.studentId} - ${student?.fullName ?? 'Student'}',
+                            ),
+                            subtitle: Text(
+                              '${student?.program ?? ''} Level ${student?.level ?? ''} | '
+                              '${eligibility.eligibilityType} | $faceStatus | '
+                              '${eligibility.eligibilityStatus} | ${eligibility.attendanceStatus}',
+                            ),
+                            trailing: Wrap(
+                              children: [
+                                IconButton(
+                                  tooltip: 'Block',
+                                  onPressed: () async {
+                                    await widget.client!
+                                        .setExamEligibilityStatus(
+                                          sessionId: session.id,
+                                          studentId: eligibility.studentId,
+                                          eligibilityType:
+                                              eligibility.eligibilityType,
+                                          status: 'blocked',
+                                        );
+                                    if (context.mounted) Navigator.pop(context);
+                                    await widget.onChanged();
+                                  },
+                                  icon: const Icon(
+                                    Icons.block,
+                                    color: AppColors.amber,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Remove',
+                                  onPressed: () async {
+                                    await widget.client!.removeExamEligibility(
+                                      session.id,
+                                      eligibility.studentId,
+                                    );
+                                    if (context.mounted) Navigator.pop(context);
+                                    await widget.onChanged();
+                                  },
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    color: AppColors.red,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -8302,6 +8532,43 @@ class ExamEntryDecision {
   bool get verified => decision == 'VERIFIED';
 }
 
+class EligibilityImportReport {
+  const EligibilityImportReport({
+    required this.totalRows,
+    required this.linked,
+    required this.alreadyAdded,
+    required this.unmatched,
+    required this.noFace,
+    required this.duplicates,
+    required this.invalid,
+    required this.review,
+  });
+
+  final int totalRows;
+  final int linked;
+  final int alreadyAdded;
+  final int unmatched;
+  final int noFace;
+  final int duplicates;
+  final int invalid;
+  final List<Map<String, dynamic>> review;
+
+  static EligibilityImportReport fromMap(Map<String, dynamic> map) =>
+      EligibilityImportReport(
+        totalRows: (map['total_rows'] as num?)?.toInt() ?? 0,
+        linked: (map['linked_count'] as num?)?.toInt() ?? 0,
+        alreadyAdded: (map['already_added_count'] as num?)?.toInt() ?? 0,
+        unmatched: (map['unmatched_count'] as num?)?.toInt() ?? 0,
+        noFace: (map['no_face_count'] as num?)?.toInt() ?? 0,
+        duplicates: (map['duplicate_count'] as num?)?.toInt() ?? 0,
+        invalid: (map['invalid_count'] as num?)?.toInt() ?? 0,
+        review: [
+          for (final row in (map['review'] as List? ?? const []))
+            Map<String, dynamic>.from(row as Map),
+        ],
+      );
+}
+
 class VerificationRecord {
   const VerificationRecord({
     this.id,
@@ -9678,12 +9945,56 @@ class OnlineBackendClient {
     required int sessionId,
     required int studentId,
     required String eligibilityType,
+    String notes = '',
   }) async {
     await _postJson('/exam-sessions/$sessionId/eligible-students', {
       'student_id': studentId,
       'eligibility_type': eligibilityType,
       'eligibility_status': 'eligible',
+      'notes': notes,
     });
+  }
+
+  Future<EligibilityImportReport> importExamEligibility({
+    required int sessionId,
+    required String filename,
+    required List<int>? bytes,
+    required String? path,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      _uri('/exam-sessions/$sessionId/eligible-students/import'),
+    );
+    if (token != null) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
+    request.files.add(
+      bytes != null
+          ? http.MultipartFile.fromBytes('file', bytes, filename: filename)
+          : await http.MultipartFile.fromPath(
+              'file',
+              path!,
+              filename: filename,
+            ),
+    );
+    return EligibilityImportReport.fromMap(await _sendMultipart(request));
+  }
+
+  Future<void> setExamEligibilityStatus({
+    required int sessionId,
+    required int studentId,
+    required String eligibilityType,
+    required String status,
+  }) async {
+    await _postJson('/exam-sessions/$sessionId/eligible-students', {
+      'student_id': studentId,
+      'eligibility_type': eligibilityType,
+      'eligibility_status': status,
+    });
+  }
+
+  Future<void> removeExamEligibility(int sessionId, int studentId) async {
+    await _deleteJson('/exam-sessions/$sessionId/eligible-students/$studentId');
   }
 
   Future<int> addMatchingExamCohort(int sessionId) async {

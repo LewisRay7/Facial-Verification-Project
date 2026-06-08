@@ -4,6 +4,7 @@ from contextlib import closing
 from datetime import datetime
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import secrets
@@ -155,6 +156,24 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT,
                 UNIQUE(exam_session_id, student_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exam_import_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exam_session_id INTEGER NOT NULL,
+                imported_by TEXT,
+                filename TEXT,
+                total_rows INTEGER NOT NULL DEFAULT 0,
+                linked_count INTEGER NOT NULL DEFAULT 0,
+                unmatched_count INTEGER NOT NULL DEFAULT 0,
+                no_face_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                invalid_count INTEGER NOT NULL DEFAULT 0,
+                review_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -1044,6 +1063,7 @@ def add_matching_exam_cohort(session_id: int) -> int:
             """
             SELECT id FROM students
             WHERE active = 1
+              AND face_embedding IS NOT NULL AND face_embedding != ''
               AND (? = '' OR lower(program) = lower(?))
               AND (? = '' OR lower(level) = lower(?))
             """,
@@ -1077,11 +1097,114 @@ def add_matching_exam_cohort(session_id: int) -> int:
         return added
 
 
+def import_exam_eligibility_rows(
+    session_id: int,
+    rows: list[dict[str, Any]],
+    filename: str,
+    imported_by: str,
+) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    review: list[dict[str, str]] = []
+    counts = {
+        "total_rows": len(rows),
+        "linked_count": 0,
+        "already_added_count": 0,
+        "unmatched_count": 0,
+        "no_face_count": 0,
+        "duplicate_count": 0,
+        "invalid_count": 0,
+    }
+    seen: set[str] = set()
+    allowed_types = {"regular", "repeat", "deferred", "supplementary", "manual_override"}
+    with closing(get_connection()) as connection:
+        for raw in rows:
+            number = str(raw.get("student_number") or "").strip().upper()
+            full_name = str(raw.get("full_name") or "").strip()
+            eligibility_type = str(raw.get("eligibility_type") or "regular").strip().lower()
+            notes = str(raw.get("notes") or "").strip()
+            result = {
+                "student_number": number,
+                "full_name": full_name,
+                "issue": "",
+                "suggested_action": "",
+            }
+            if not number:
+                result.update(issue="Invalid student number", suggested_action="Correct student number")
+                counts["invalid_count"] += 1
+            elif number in seen:
+                result.update(issue="Duplicate row", suggested_action="Ignore")
+                counts["duplicate_count"] += 1
+            elif eligibility_type not in allowed_types:
+                result.update(issue="Invalid eligibility type", suggested_action="Correct eligibility type")
+                counts["invalid_count"] += 1
+            else:
+                seen.add(number)
+                student = connection.execute(
+                    "SELECT * FROM students WHERE student_number_hash = ?",
+                    (hash_student_identifier(number),),
+                ).fetchone()
+                if student is None:
+                    result.update(
+                        issue="Student not found in biometric database",
+                        suggested_action="Register face first or correct student number",
+                    )
+                    counts["unmatched_count"] += 1
+                elif not student["face_embedding"]:
+                    result.update(
+                        full_name=student["full_name"],
+                        issue="Student exists but face not enrolled",
+                        suggested_action="Register face first",
+                    )
+                    counts["no_face_count"] += 1
+                elif connection.execute(
+                    "SELECT id FROM exam_session_students WHERE exam_session_id = ? AND student_id = ?",
+                    (session_id, student["id"]),
+                ).fetchone():
+                    result.update(
+                        full_name=student["full_name"],
+                        issue="Already linked to session",
+                        suggested_action="Ignore",
+                    )
+                    counts["already_added_count"] += 1
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO exam_session_students (
+                            exam_session_id, student_id, eligibility_type, eligibility_status,
+                            attendance_status, notes, created_at, updated_at
+                        ) VALUES (?, ?, ?, 'eligible', 'not_verified', ?, ?, ?)
+                        """,
+                        (session_id, student["id"], eligibility_type, notes or f"Imported from {filename}.", now, now),
+                    )
+                    counts["linked_count"] += 1
+                    continue
+            review.append(result)
+        connection.execute(
+            """
+            INSERT INTO exam_import_audits (
+                exam_session_id, imported_by, filename, total_rows, linked_count,
+                unmatched_count, no_face_count, duplicate_count, invalid_count,
+                review_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id, imported_by, filename, counts["total_rows"],
+                counts["linked_count"], counts["unmatched_count"], counts["no_face_count"],
+                counts["duplicate_count"], counts["invalid_count"], json.dumps(review), now,
+            ),
+        )
+        connection.commit()
+    return {**counts, "filename": filename, "review": review}
+
+
 def list_exam_session_students(session_id: int) -> list[dict[str, Any]]:
     with closing(get_connection()) as connection:
         rows = connection.execute(
             """
-            SELECT ess.*, students.student_number, students.full_name, students.program
+            SELECT ess.*, students.student_number, students.full_name, students.program,
+                   students.level, students.student_status,
+                   CASE WHEN students.face_embedding IS NOT NULL AND students.face_embedding != ''
+                        THEN 'face_enrolled' ELSE 'no_face' END AS biometric_status
             FROM exam_session_students ess
             JOIN students ON students.id = ess.student_id
             WHERE ess.exam_session_id = ?
@@ -1090,6 +1213,35 @@ def list_exam_session_students(session_id: int) -> list[dict[str, Any]]:
             (session_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def set_exam_session_student_status(
+    session_id: int, student_id: int, eligibility_status: str
+) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            UPDATE exam_session_students
+            SET eligibility_status = ?, updated_at = ?
+            WHERE exam_session_id = ? AND student_id = ?
+            """,
+            (
+                eligibility_status,
+                datetime.now().isoformat(timespec="seconds"),
+                session_id,
+                student_id,
+            ),
+        )
+        connection.commit()
+
+
+def remove_exam_session_student(session_id: int, student_id: int) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            "DELETE FROM exam_session_students WHERE exam_session_id = ? AND student_id = ?",
+            (session_id, student_id),
+        )
+        connection.commit()
 
 
 def evaluate_local_exam_entry(

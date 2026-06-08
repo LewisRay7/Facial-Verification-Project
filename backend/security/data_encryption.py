@@ -13,6 +13,7 @@ from backend.config import settings
 
 PREFIX = "ev1:"
 AAD = b"examverify-student-biometric-v1"
+IDENTIFIER_PEPPER = "ExamVerify-Local-Identifier-Pepper-v2"
 
 
 def encrypt_text(value: str) -> str:
@@ -42,6 +43,11 @@ def decrypt_json(value: str) -> dict[str, Any]:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def hash_student_identifier(value: str) -> str:
+    normalized = value.strip().upper()
+    return sha256_text(f"{IDENTIFIER_PEPPER}|{normalized}")
 
 
 def _key() -> bytes:

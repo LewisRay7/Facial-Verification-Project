@@ -108,6 +108,25 @@ class ExamSessionStudent(Base):
     student: Mapped[Student] = relationship(back_populates="exam_eligibilities")
 
 
+class ExamImportAudit(Base):
+    __tablename__ = "exam_import_audits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exam_session_id: Mapped[int] = mapped_column(
+        ForeignKey("exam_sessions.id"), index=True
+    )
+    imported_by: Mapped[str] = mapped_column(String(80), default="")
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    total_rows: Mapped[int] = mapped_column(Integer, default=0)
+    linked_count: Mapped[int] = mapped_column(Integer, default=0)
+    unmatched_count: Mapped[int] = mapped_column(Integer, default=0)
+    no_face_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_count: Mapped[int] = mapped_column(Integer, default=0)
+    review_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class VerificationLog(Base):
     __tablename__ = "verification_logs"
 

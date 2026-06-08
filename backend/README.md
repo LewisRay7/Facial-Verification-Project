@@ -36,6 +36,8 @@ this key makes encrypted biometric records unrecoverable.
 Exam entry approval uses the selected active exam session rather than program or
 level alone. This supports regular, repeat, deferred, supplementary, and
 administrator-approved students without requiring biometric re-enrollment.
+CSV/XLSX eligibility imports match the existing peppered student identifier and
+never generate or replace biometric data.
 
 ## Render
 

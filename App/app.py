@@ -30,6 +30,7 @@ from SRC.database import (
     dashboard_summary,
     evaluation_summary,
     get_student_by_number,
+    import_exam_eligibility_rows,
     init_db,
     list_logs,
     list_audit_events,
@@ -38,9 +39,11 @@ from SRC.database import (
     list_exam_session_students,
     log_audit_event,
     mask_student_identifier,
+    remove_exam_session_student,
     search_students,
     set_student_active,
     set_exam_session_status,
+    set_exam_session_student_status,
     evaluate_local_exam_entry,
     store_pending_email_otp,
     two_factor_setup_hint,
@@ -1078,13 +1081,23 @@ def auto_identify_page() -> None:
     )
 
     students = [dict(row) for row in list_students(active_only=True)]
-    embedded_students = [row for row in students if row.get("face_embedding")]
+    roster = list_exam_session_students(int(session["id"]))
+    eligible_ids = {
+        int(row["student_id"])
+        for row in roster
+        if row["eligibility_status"] == "eligible"
+        and row["biometric_status"] == "face_enrolled"
+    }
+    global_embedded_students = [row for row in students if row.get("face_embedding")]
+    embedded_students = [
+        row for row in global_embedded_students if int(row["id"]) in eligible_ids
+    ]
 
     section_header("Recognition Readiness", "FaceNet compares the live capture against stored student embeddings.")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Active students", len(students))
-    col2.metric("Ready for auto scan", len(embedded_students))
-    col3.metric("Missing embeddings", len(students) - len(embedded_students))
+    col1.metric("Session roster", len(roster))
+    col2.metric("Eligible and face-enrolled", len(embedded_students))
+    col3.metric("Roster not scan-ready", len(roster) - len(embedded_students))
 
     if not students:
         st.info("No active students are registered yet.")
@@ -1092,8 +1105,8 @@ def auto_identify_page() -> None:
 
     if not embedded_students:
         st.warning(
-            "Automatic identification needs stored FaceNet embeddings. Open the Students "
-            "page and generate embeddings for registered students first."
+            "This session has no eligible students with stored FaceNet embeddings. "
+            "Import or add eligible students after completing biometric enrollment."
         )
         return
 
@@ -1103,15 +1116,15 @@ def auto_identify_page() -> None:
             default_gap=0.08,
         )
         st.info(
-            "This mode L2-normalizes FaceNet embeddings, calculates distances to all "
-            "active students, and returns Unknown unless the closest distance is below "
+            "This mode L2-normalizes FaceNet embeddings, calculates approval distances "
+            "only against this session's eligible roster, and returns Unknown unless the closest distance is below "
             "the threshold and clearly better than the next closest student."
         )
 
     left, right = st.columns([1, 1])
     with left:
         section_header("Live Camera Scan", "Capture one clear face for automatic identity search.")
-        camera_note("Capture one face only. The engine compares it with all active stored embeddings.")
+        camera_note("Capture one face only. Approval compares only with the selected session roster.")
         camera_image = st.camera_input("Capture face for automatic identification")
 
     with right:
@@ -1138,8 +1151,23 @@ def auto_identify_page() -> None:
 
         matched_student = find_student_by_id(embedded_students, result.student_id)
         if result.status == "UNKNOWN":
+            global_result = identify_face_from_embeddings(
+                capture_path,
+                global_embedded_students,
+                facenet_threshold=facenet_threshold,
+                min_distance_gap=min_distance_gap,
+            )
+            global_student = find_student_by_id(
+                global_embedded_students, global_result.student_id
+            )
             render_html(unknown_badge())
-            st.error(result.message)
+            if global_result.status == "VERIFIED" and global_student:
+                st.error(
+                    "ACCESS DENIED: Recognized registered student, but they are not "
+                    "eligible for the selected exam session."
+                )
+            else:
+                st.error("ACCESS DENIED: Face not recognized.")
             render_result_card(
                 "Unknown",
                 None,
@@ -1637,6 +1665,43 @@ def exam_sessions_page() -> None:
                 added = add_matching_exam_cohort(session["id"])
                 st.success(f"Added {added} matching student(s).")
                 st.rerun()
+            uploaded = st.file_uploader(
+                "Import Eligible List",
+                type=["csv", "xlsx"],
+                key=f"import_{session['id']}",
+                help=(
+                    "Links student numbers to existing biometric profiles. "
+                    "It never creates students or face embeddings."
+                ),
+            )
+            if uploaded is not None and st.button(
+                "Review and import list", key=f"run_import_{session['id']}"
+            ):
+                frame = (
+                    pd.read_csv(uploaded)
+                    if uploaded.name.lower().endswith(".csv")
+                    else pd.read_excel(uploaded)
+                )
+                frame.columns = [str(column).strip().lower() for column in frame.columns]
+                if "student_number" not in frame.columns:
+                    st.error("The imported file must include a student_number column.")
+                else:
+                    report = import_exam_eligibility_rows(
+                        session["id"],
+                        frame.fillna("").to_dict("records"),
+                        uploaded.name,
+                        st.session_state.get("username", "admin"),
+                    )
+                    summary = st.columns(6)
+                    summary[0].metric("Rows", report["total_rows"])
+                    summary[1].metric("Linked", report["linked_count"])
+                    summary[2].metric("Already added", report["already_added_count"])
+                    summary[3].metric("Unmatched", report["unmatched_count"])
+                    summary[4].metric("No face", report["no_face_count"])
+                    summary[5].metric("Invalid", report["invalid_count"] + report["duplicate_count"])
+                    if report["review"]:
+                        st.subheader("Import Review / Unmatched Students")
+                        st.dataframe(report["review"], use_container_width=True, hide_index=True)
             active_students = [
                 row for row in students if row.get("student_status", "active") == "active"
             ]
@@ -1660,10 +1725,31 @@ def exam_sessions_page() -> None:
                         session["id"], selected["id"], eligibility_type
                     )
                     st.rerun()
-            st.dataframe(
-                list_exam_session_students(session["id"]),
-                use_container_width=True,
-            )
+            roster = list_exam_session_students(session["id"])
+            st.subheader("Eligible Student Roster")
+            st.dataframe(roster, use_container_width=True, hide_index=True)
+            if roster:
+                roster_student = st.selectbox(
+                    "Roster action",
+                    roster,
+                    format_func=lambda row: (
+                        f"{row['student_number']} - {row['full_name']} | "
+                        f"{row['biometric_status']} | {row['eligibility_status']} | "
+                        f"{row['attendance_status']}"
+                    ),
+                    key=f"roster_action_{session['id']}",
+                )
+                block_col, remove_col = st.columns(2)
+                if block_col.button("Block selected", key=f"block_{session['id']}"):
+                    set_exam_session_student_status(
+                        session["id"], roster_student["student_id"], "blocked"
+                    )
+                    st.rerun()
+                if remove_col.button("Remove selected", key=f"remove_{session['id']}"):
+                    remove_exam_session_student(
+                        session["id"], roster_student["student_id"]
+                    )
+                    st.rerun()
 
 
 def students_page() -> None:

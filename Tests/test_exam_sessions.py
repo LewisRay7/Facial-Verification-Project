@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import unittest
+from io import BytesIO
+from openpyxl import Workbook
 
 TEST_DB = Path(__file__).resolve().parent / "exam_sessions_test.db"
 TEST_DB.unlink(missing_ok=True)
@@ -17,6 +19,7 @@ from backend.auth.security import create_access_token
 from backend.database import SessionLocal, engine
 from backend.main import create_app
 from backend.models.tables import Student, User
+from backend.security.data_encryption import encrypt_json, hash_student_identifier
 
 
 class ExamSessionEligibilityTests(unittest.TestCase):
@@ -35,35 +38,38 @@ class ExamSessionEligibilityTests(unittest.TestCase):
 
     def setUp(self) -> None:
         with SessionLocal() as db:
-            for table in ["verification_logs", "exam_session_students", "exam_sessions", "students"]:
+            for table in ["verification_logs", "exam_import_audits", "exam_session_students", "exam_sessions", "students"]:
                 db.execute(__import__("sqlalchemy").text(f"DELETE FROM {table}"))
             db.commit()
             john = Student(
-                student_number_hash="john-hash",
+                student_number_hash=hash_student_identifier("240001"),
                 student_number_mask="24***01",
                 full_name="John",
                 program="DIT",
                 level="4",
                 status="active",
                 active=True,
+                biometric_profile_json=encrypt_json({"signature": [0.1] * 192}),
             )
             paul = Student(
-                student_number_hash="paul-hash",
+                student_number_hash=hash_student_identifier("240002"),
                 student_number_mask="24***02",
                 full_name="Paul",
                 program="DIT",
                 level="5",
                 status="active",
                 active=True,
+                biometric_profile_json=encrypt_json({"signature": [0.2] * 192}),
             )
             suspended = Student(
-                student_number_hash="suspended-hash",
+                student_number_hash=hash_student_identifier("240003"),
                 student_number_mask="24***03",
                 full_name="Suspended",
                 program="DIT",
                 level="4",
                 status="suspended",
                 active=True,
+                biometric_profile_json=encrypt_json({"signature": [0.3] * 192}),
             )
             db.add_all([john, paul, suspended])
             db.commit()
@@ -134,6 +140,108 @@ class ExamSessionEligibilityTests(unittest.TestCase):
             headers=self.headers,
         ).json()["eligible_students"]
         self.assertEqual([row["student_name"] for row in roster], ["John"])
+
+    def test_csv_import_links_existing_faces_and_reports_issues(self):
+        with SessionLocal() as db:
+            no_face = Student(
+                student_number_hash=hash_student_identifier("24NOFACE"),
+                student_number_mask="24***NF",
+                full_name="No Face",
+                program="DIT",
+                level="4",
+                status="active",
+                active=True,
+            )
+            db.add(no_face)
+            db.commit()
+        csv_body = (
+            "student_number,eligibility_type,full_name\n"
+            "240001,regular,John\n"
+            "24NOFACE,regular,No Face\n"
+            "24MISSING,regular,Missing\n"
+        )
+        response = self.client.post(
+            f"/exam-sessions/{self.session_id}/eligible-students/import",
+            headers=self.headers,
+            files={"file": ("eligible.csv", csv_body, "text/csv")},
+        )
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertEqual(report["no_face_count"], 1)
+        self.assertEqual(report["unmatched_count"], 1)
+        self.assertEqual(report["linked_count"], 1)
+
+    def test_twenty_row_import_summary(self):
+        rows = []
+        with SessionLocal() as db:
+            for index in range(15):
+                number = f"25FACE{index:02d}"
+                db.add(
+                    Student(
+                        student_number_hash=hash_student_identifier(number),
+                        student_number_mask=f"25***{index:02d}",
+                        full_name=f"Face Student {index}",
+                        program="DIT",
+                        level="4",
+                        status="active",
+                        active=True,
+                        biometric_profile_json=encrypt_json({"signature": [0.1] * 192}),
+                    )
+                )
+                rows.append(f"{number},regular,Face Student {index}")
+            for index in range(3):
+                number = f"25NOFACE{index}"
+                db.add(
+                    Student(
+                        student_number_hash=hash_student_identifier(number),
+                        student_number_mask=f"25***N{index}",
+                        full_name=f"No Face {index}",
+                        program="DIT",
+                        level="4",
+                        status="active",
+                        active=True,
+                    )
+                )
+                rows.append(f"{number},regular,No Face {index}")
+            db.commit()
+        rows.extend(["25MISSING1,regular,Missing 1", "25MISSING2,regular,Missing 2"])
+        response = self.client.post(
+            f"/exam-sessions/{self.session_id}/eligible-students/import",
+            headers=self.headers,
+            files={
+                "file": (
+                    "twenty.csv",
+                    "student_number,eligibility_type,full_name\n" + "\n".join(rows),
+                    "text/csv",
+                )
+            },
+        )
+        report = response.json()
+        self.assertEqual(report["total_rows"], 20)
+        self.assertEqual(report["linked_count"], 15)
+        self.assertEqual(report["no_face_count"], 3)
+        self.assertEqual(report["unmatched_count"], 2)
+
+    def test_xlsx_import_links_existing_face(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["student_number", "eligibility_type", "notes"])
+        sheet.append(["240001", "regular", "Registrar list"])
+        content = BytesIO()
+        workbook.save(content)
+        response = self.client.post(
+            f"/exam-sessions/{self.session_id}/eligible-students/import",
+            headers=self.headers,
+            files={
+                "file": (
+                    "eligible.xlsx",
+                    content.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["linked_count"], 1)
 
     def test_unknown_face_denied(self):
         result = self.verify(None, identity_matched=False)

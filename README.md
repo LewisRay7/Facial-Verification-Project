@@ -81,6 +81,11 @@ the registrar or student-information system's semester course registrations.
 Biometric enrollment remains separate and does not need to be repeated when a
 student's level or registered courses change.
 
+Eligible-list CSV/XLSX imports only link normalized student numbers to existing
+biometric profiles. They never create students, portraits, or embeddings.
+Unmatched identifiers and students without a face profile appear in the import
+review report and cannot be verified until biometric enrollment is completed.
+
 ## Setup
 
 Install Python 3.10 or 3.11 first. During installation, tick "Add Python to PATH".
