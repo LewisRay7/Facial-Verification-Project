@@ -61,6 +61,7 @@ class ExamSessionEligibilityTests(unittest.TestCase):
             for table in ["verification_logs", "exam_import_audits", "exam_session_invigilators", "exam_session_students", "exam_sessions", "students"]:
                 db.execute(__import__("sqlalchemy").text(f"DELETE FROM {table}"))
             db.commit()
+
             john = Student(
                 student_number_hash=hash_student_identifier("240001"),
                 student_number_mask="24***01",
@@ -108,6 +109,15 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         ).json()
         self.session_id = created["exam_session"]["id"]
         self.client.post(f"/exam-sessions/{self.session_id}/activate", headers=self.headers)
+
+    def test_readiness_checks_database_and_security_configuration(self) -> None:
+        response = self.client.get("/health/ready")
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["database"], "ready")
+        self.assertTrue(result["data_encryption_configured"])
 
     def add(self, student_id: int, kind: str = "regular") -> None:
         response = self.client.post(

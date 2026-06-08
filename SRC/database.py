@@ -296,7 +296,7 @@ def _hash_otp(code: str) -> str:
 def _seed_default_users(connection: sqlite3.Connection) -> None:
     users = [
         ("admin", "System Administrator", DEFAULT_ADMIN_EMAIL, "Super Admin", "Admin@12345"),
-        ("invigilator", "Exam Invigilator", "invigilator@examverify.local", "Admin", "Verify@12345"),
+        ("invigilator", "Exam Invigilator", "invigilator@examverify.local", "Invigilator", "Verify@12345"),
         ("viewer", "Audit Viewer", "viewer@examverify.local", "Viewer", "View@12345"),
     ]
     existing = {
@@ -355,6 +355,15 @@ def _seed_default_users(connection: sqlite3.Connection) -> None:
                 "UPDATE users SET email = ? WHERE username = ?",
                 (email, username),
             )
+    connection.execute(
+        """
+        UPDATE users
+        SET role = 'Invigilator'
+        WHERE username = 'invigilator'
+          AND email = 'invigilator@examverify.local'
+          AND role = 'Admin'
+        """
+    )
 
 
 def start_login(username: str, password: str, otp_code: str) -> dict[str, Any] | None:
