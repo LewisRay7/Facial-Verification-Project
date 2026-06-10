@@ -59,6 +59,8 @@ def _student_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return None
     record = dict(row)
     record["photo_path"] = _resolve_moved_project_path(record.get("photo_path"))
+    record["level"] = record.get("level") or ""
+    record["student_status"] = record.get("student_status") or "active"
     return record
 
 
@@ -219,6 +221,10 @@ def _ensure_student_columns(connection: sqlite3.Connection) -> None:
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
             connection.execute(statement)
+    connection.execute("UPDATE students SET level = '' WHERE level IS NULL")
+    connection.execute(
+        "UPDATE students SET student_status = 'active' WHERE student_status IS NULL OR student_status = ''"
+    )
 
 
 def _ensure_log_columns(connection: sqlite3.Connection) -> None:
@@ -671,21 +677,23 @@ def add_student(
     embedding_backend: str | None = None,
     exam_eligible: bool = True,
     eligibility_note: str = "",
+    level: str = "",
 ) -> int:
     with closing(get_connection()) as connection:
         cursor = connection.execute(
             """
             INSERT INTO students (
-                student_number, full_name, program, photo_path,
+                student_number, full_name, program, level, photo_path,
                 student_number_hash, face_embedding, embedding_backend, exam_eligible,
                 eligibility_note, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student_number.strip(),
                 full_name.strip(),
                 program.strip(),
+                level.strip(),
                 str(photo_path),
                 hash_student_identifier(student_number),
                 face_embedding,
@@ -742,6 +750,7 @@ def update_student_details(
     program: str,
     exam_eligible: bool,
     eligibility_note: str,
+    level: str = "",
 ) -> None:
     with closing(get_connection()) as connection:
         connection.execute(
@@ -752,6 +761,7 @@ def update_student_details(
                 student_number_hash = ?,
                 full_name = ?,
                 program = ?,
+                level = ?,
                 exam_eligible = ?,
                 eligibility_note = ?,
                 updated_at = ?
@@ -762,6 +772,7 @@ def update_student_details(
                 hash_student_identifier(student_number),
                 full_name.strip(),
                 program.strip(),
+                level.strip(),
                 1 if exam_eligible else 0,
                 eligibility_note.strip(),
                 datetime.now().isoformat(timespec="seconds"),
@@ -805,7 +816,8 @@ def list_students(active_only: bool = True) -> list[dict[str, Any]]:
         rows = connection.execute(
                 f"""
                 SELECT
-                    id, student_number, student_number_hash, full_name, program, photo_path, created_at,
+                    id, student_number, student_number_hash, full_name, program, level, student_status,
+                    photo_path, created_at,
                     active, face_embedding, embedding_backend,
                     exam_eligible, eligibility_note
                 FROM students
@@ -823,15 +835,16 @@ def search_students(search_text: str = "", active_only: bool = True) -> list[dic
         rows = connection.execute(
                 f"""
                 SELECT
-                    id, student_number, student_number_hash, full_name, program, photo_path, created_at,
+                    id, student_number, student_number_hash, full_name, program, level, student_status,
+                    photo_path, created_at,
                     active, face_embedding, embedding_backend,
                     exam_eligible, eligibility_note
                 FROM students
-                WHERE (student_number LIKE ? OR full_name LIKE ? OR program LIKE ?)
+                WHERE (student_number LIKE ? OR full_name LIKE ? OR program LIKE ? OR level LIKE ?)
                 {active_filter}
                 ORDER BY full_name COLLATE NOCASE
                 """,
-                (query, query, query),
+                (query, query, query, query),
             ).fetchall()
         return [_student_record(row) for row in rows if row is not None]
 
@@ -841,7 +854,8 @@ def get_student(student_id: int) -> dict[str, Any] | None:
         row = connection.execute(
             """
             SELECT
-                id, student_number, student_number_hash, full_name, program, photo_path, created_at,
+                id, student_number, student_number_hash, full_name, program, level, student_status,
+                photo_path, created_at,
                 active, face_embedding, embedding_backend,
                 exam_eligible, eligibility_note
             FROM students
@@ -857,7 +871,8 @@ def get_student_by_number(student_number: str) -> dict[str, Any] | None:
         row = connection.execute(
             """
             SELECT
-                id, student_number, student_number_hash, full_name, program, photo_path, created_at,
+                id, student_number, student_number_hash, full_name, program, level, student_status,
+                photo_path, created_at,
                 active, face_embedding, embedding_backend,
                 exam_eligible, eligibility_note
             FROM students

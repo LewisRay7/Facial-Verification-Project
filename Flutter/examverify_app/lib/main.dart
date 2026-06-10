@@ -498,6 +498,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       'Students' => StudentsPage(
         students: students,
         onlineMode: onlineClient != null,
+        onStudentUpdated: _registerStudent,
         onToggleEligibility: _toggleEligibility,
         onDeleteStudent: _deleteStudent,
       ),
@@ -2824,6 +2825,7 @@ class _RegisterPageState extends State<RegisterPage> {
   final studentNumberController = TextEditingController();
   final fullNameController = TextEditingController();
   final programController = TextEditingController();
+  final levelController = TextEditingController();
   final noteController = TextEditingController();
   bool eligible = true;
   bool saving = false;
@@ -2837,6 +2839,7 @@ class _RegisterPageState extends State<RegisterPage> {
     studentNumberController.dispose();
     fullNameController.dispose();
     programController.dispose();
+    levelController.dispose();
     noteController.dispose();
     super.dispose();
   }
@@ -2875,6 +2878,12 @@ class _RegisterPageState extends State<RegisterPage> {
                   AppTextField(
                     controller: programController,
                     label: 'Program / class',
+                  ),
+                  const SizedBox(height: 12),
+                  AppTextField(
+                    controller: levelController,
+                    label: 'Level',
+                    required: false,
                   ),
                   const SizedBox(height: 12),
                   AppTextField(
@@ -2999,6 +3008,7 @@ class _RegisterPageState extends State<RegisterPage> {
           studentNumber: studentNumber,
           fullName: fullNameController.text.trim(),
           program: programController.text.trim(),
+          level: levelController.text.trim(),
           eligible: eligible,
           note: noteController.text.trim(),
           photoPath: storedPhoto.path,
@@ -3013,6 +3023,7 @@ class _RegisterPageState extends State<RegisterPage> {
       studentNumberController.clear();
       fullNameController.clear();
       programController.clear();
+      levelController.clear();
       noteController.clear();
       setState(() {
         referencePhoto = null;
@@ -4280,6 +4291,7 @@ class StudentsPage extends StatefulWidget {
   const StudentsPage({
     required this.students,
     required this.onlineMode,
+    required this.onStudentUpdated,
     required this.onToggleEligibility,
     required this.onDeleteStudent,
     super.key,
@@ -4287,6 +4299,7 @@ class StudentsPage extends StatefulWidget {
 
   final List<StudentRecord> students;
   final bool onlineMode;
+  final Future<void> Function(StudentRecord student) onStudentUpdated;
   final Future<void> Function(StudentRecord student) onToggleEligibility;
   final Future<void> Function(StudentRecord student) onDeleteStudent;
 
@@ -4324,6 +4337,7 @@ class _StudentsPageState extends State<StudentsPage> {
         student.fullName,
         student.studentNumber,
         student.program,
+        student.level,
         student.note,
         student.studentNumberHash ?? '',
         AuthService.maskIdentifier(student.studentNumber),
@@ -4405,6 +4419,11 @@ class _StudentsPageState extends State<StudentsPage> {
                             : AppColors.red,
                       ),
                       IconButton(
+                        tooltip: 'Edit student record',
+                        onPressed: () => _editStudent(context, student),
+                        icon: const Icon(Icons.edit_outlined),
+                      ),
+                      IconButton(
                         tooltip: 'Toggle eligibility',
                         onPressed: () => widget.onToggleEligibility(student),
                         icon: const Icon(Icons.swap_horiz),
@@ -4461,6 +4480,83 @@ class _StudentsPageState extends State<StudentsPage> {
         SnackBar(content: Text('Could not delete student: $error')),
       );
     }
+  }
+
+  Future<void> _editStudent(BuildContext context, StudentRecord student) async {
+    final fullName = TextEditingController(text: student.fullName);
+    final program = TextEditingController(text: student.program);
+    final level = TextEditingController(text: student.level);
+    final note = TextEditingController(text: student.note);
+    var eligible = student.eligible;
+    final updated = await showDialog<StudentRecord>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Edit student record'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: fullName,
+                  decoration: const InputDecoration(labelText: 'Full name'),
+                ),
+                TextField(
+                  controller: program,
+                  decoration: const InputDecoration(
+                    labelText: 'Program / class',
+                  ),
+                ),
+                TextField(
+                  controller: level,
+                  decoration: const InputDecoration(labelText: 'Level'),
+                ),
+                TextField(
+                  controller: note,
+                  decoration: const InputDecoration(
+                    labelText: 'Eligibility note',
+                  ),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: eligible,
+                  title: const Text('Eligible to write exam'),
+                  onChanged: (value) => setDialogState(() => eligible = value),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(
+                student.copyWith(
+                  fullName: fullName.text.trim(),
+                  program: program.text.trim(),
+                  level: level.text.trim(),
+                  eligible: eligible,
+                  note: note.text.trim(),
+                ),
+              ),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    fullName.dispose();
+    program.dispose();
+    level.dispose();
+    note.dispose();
+    if (updated == null || !context.mounted) return;
+    await widget.onStudentUpdated(updated);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${updated.fullName} has been updated.')),
+    );
   }
 }
 
@@ -6079,6 +6175,12 @@ class StudentInfoPane extends StatelessWidget {
               value: student.program.isEmpty
                   ? 'Program not recorded'
                   : student.program,
+            ),
+            _StudentInfoLine(
+              label: 'Level',
+              value: student.level.isEmpty
+                  ? 'Level not recorded'
+                  : student.level,
             ),
             _StudentInfoLine(
               label: 'Eligibility',
@@ -8608,7 +8710,11 @@ class StudentRecord {
   final String? backendName;
 
   StudentRecord copyWith({
+    String? fullName,
+    String? program,
+    String? level,
     bool? eligible,
+    String? note,
     String? backendEmbedding,
     String? backendName,
   }) {
@@ -8617,12 +8723,12 @@ class StudentRecord {
       studentNumber: studentNumber,
       studentNumberHash:
           studentNumberHash ?? AuthService.hashIdentifier(studentNumber),
-      fullName: fullName,
-      program: program,
-      level: level,
+      fullName: fullName ?? this.fullName,
+      program: program ?? this.program,
+      level: level ?? this.level,
       status: status,
       eligible: eligible ?? this.eligible,
-      note: note,
+      note: note ?? this.note,
       photoPath: photoPath,
       signature: signature,
       backendEmbedding: backendEmbedding ?? this.backendEmbedding,
