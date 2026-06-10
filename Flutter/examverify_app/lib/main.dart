@@ -3100,6 +3100,7 @@ class _VerifyPageState extends State<VerifyPage> {
                   const SizedBox(height: 16),
                   DropdownButtonFormField<StudentRecord>(
                     initialValue: selectedStudent,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Select student',
                     ),
@@ -3109,6 +3110,8 @@ class _VerifyPageState extends State<VerifyPage> {
                           value: student,
                           child: Text(
                             '${student.studentNumber} - ${student.fullName}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                     ],
@@ -5297,10 +5300,18 @@ class _ExamSessionSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     return DropdownButtonFormField<ExamSessionRecord>(
       initialValue: selected,
+      isExpanded: true,
       decoration: const InputDecoration(labelText: 'Active exam session'),
       items: [
         for (final session in sessions)
-          DropdownMenuItem(value: session, child: Text(session.label)),
+          DropdownMenuItem(
+            value: session,
+            child: Text(
+              session.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
       ],
       onChanged: onChanged,
     );
@@ -5483,67 +5494,62 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: PanelCard(
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              session.label,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            Text(
-                              '${session.program} Level ${session.level} | ${session.examDate} | ${session.status}',
-                              style: const TextStyle(color: AppColors.muted),
-                            ),
-                            const SizedBox(height: 4),
-                            const Text(
-                              'Matching cohort links already face-enrolled students with the same program and level. Use Add Exception for repeat, deferred, or supplementary students.',
-                              style: TextStyle(
-                                color: AppColors.muted,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
+                      Text(
+                        session.label,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
                         ),
                       ),
-                      OutlinedButton(
-                        onPressed: () => _addStudent(session),
-                        child: const Text('Add exception'),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${session.program} Level ${session.level} | ${session.examDate} | ${session.status}',
+                        style: const TextStyle(color: AppColors.muted),
                       ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: () => _addMatchingCohort(session),
-                        child: const Text('Add matching cohort'),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Matching cohort links already face-enrolled students with the same program and level. Use Add Exception for repeat, deferred, or supplementary students.',
+                        style: TextStyle(color: AppColors.muted, fontSize: 12),
                       ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: () => _importEligibleList(session),
-                        child: const Text('Import eligible list'),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: () => _showRoster(session),
-                        child: const Text('View roster'),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: () => _assignInvigilator(session),
-                        child: const Text('Assign invigilator'),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: () => _activate(session),
-                        child: Text(session.isActive ? 'Active' : 'Activate'),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: () => _complete(session),
-                        child: const Text('Complete'),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => _addStudent(session),
+                            child: const Text('Add exception'),
+                          ),
+                          OutlinedButton(
+                            onPressed: () => _addMatchingCohort(session),
+                            child: const Text('Add matching cohort'),
+                          ),
+                          OutlinedButton(
+                            onPressed: () => _importEligibleList(session),
+                            child: const Text('Import eligible list'),
+                          ),
+                          OutlinedButton(
+                            onPressed: () => _showRoster(session),
+                            child: const Text('View roster'),
+                          ),
+                          OutlinedButton(
+                            onPressed: () => _assignInvigilator(session),
+                            child: const Text('Assign invigilator'),
+                          ),
+                          FilledButton(
+                            onPressed: () => _activate(session),
+                            child: Text(
+                              session.isActive ? 'Active' : 'Activate',
+                            ),
+                          ),
+                          OutlinedButton(
+                            onPressed: () => _complete(session),
+                            child: const Text('Complete'),
+                          ),
+                        ],
                       ),
                     ],
                   ),
