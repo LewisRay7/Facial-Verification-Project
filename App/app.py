@@ -825,6 +825,7 @@ def register_student_page() -> None:
             student_number = st.text_input("Student number")
             full_name = st.text_input("Full name")
             program = st.text_input("Program / class")
+            level = st.text_input("Level")
             exam_eligible = st.checkbox("Eligible to write exam", value=True)
             eligibility_note = st.text_input(
                 "Eligibility note",
@@ -872,6 +873,7 @@ def register_student_page() -> None:
                 embedding_backend=embedding_backend,
                 exam_eligible=exam_eligible,
                 eligibility_note=eligibility_note,
+                level=level,
             )
             st.success("Student registered successfully.")
         if embedding_backend:
@@ -1817,7 +1819,7 @@ def students_page() -> None:
     )
     section_header("Student Directory", "Search and manage registered students without leaving the console.")
     show_inactive = st.checkbox("Show inactive students")
-    search_text = st.text_input("Search by student number, name, or program")
+    search_text = st.text_input("Search by student number, name, program, or level")
     students = search_students(search_text, active_only=not show_inactive)
 
     if not students:
@@ -1845,6 +1847,7 @@ def students_page() -> None:
                 "student_number",
                 "full_name",
                 "program",
+                "level",
                 "eligibility",
                 "status",
                 "created_at",
@@ -1913,6 +1916,10 @@ def students_page() -> None:
                 "Program / class",
                 value=selected_student["program"] or "",
             )
+            updated_level = st.text_input(
+                "Level",
+                value=selected_student.get("level", "") or "",
+            )
             updated_exam_eligible = st.checkbox(
                 "Eligible to write exam",
                 value=bool(selected_student["exam_eligible"]),
@@ -1940,6 +1947,7 @@ def students_page() -> None:
                         updated_program,
                         updated_exam_eligible,
                         updated_eligibility_note,
+                        level=updated_level,
                     )
                     if replacement_photo is not None:
                         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")

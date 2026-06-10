@@ -30,6 +30,7 @@ class LocalDatabaseStabilizationTests(unittest.TestCase):
             photo,
             face_embedding="[0.1, 0.2]",
             embedding_backend="test",
+            level="4",
         )
         self.assertGreater(student_id, 0)
 
@@ -40,6 +41,7 @@ class LocalDatabaseStabilizationTests(unittest.TestCase):
             "DIT",
             True,
             "",
+            level="5",
         )
         database.update_student_photo(
             student_id,
@@ -60,6 +62,61 @@ class LocalDatabaseStabilizationTests(unittest.TestCase):
         )
         self.assertIn("student_number_hash=", registered["details"])
         self.assertNotIn("2410470", registered["details"])
+        student = database.get_student(student_id)
+        self.assertEqual(student["level"], "5")
+        self.assertEqual(database.get_student_by_number("2410470")["level"], "5")
+        self.assertEqual(database.list_students(active_only=False)[0]["level"], "5")
+        self.assertEqual(
+            database.search_students("5", active_only=False)[0]["level"],
+            "5",
+        )
+
+    def test_matching_cohort_uses_program_and_level(self) -> None:
+        photo = Path(self.temp_dir.name) / "student.jpg"
+        photo.write_bytes(b"test portrait")
+        matching_id = database.add_student(
+            "2410472",
+            "Matching Student",
+            "DIT",
+            photo,
+            face_embedding="[0.1, 0.2]",
+            embedding_backend="test",
+            level="4",
+        )
+        database.add_student(
+            "2410473",
+            "Wrong Level",
+            "DIT",
+            photo,
+            face_embedding="[0.1, 0.2]",
+            embedding_backend="test",
+            level="2",
+        )
+        database.add_student(
+            "2410474",
+            "Wrong Program",
+            "DBIT",
+            photo,
+            face_embedding="[0.1, 0.2]",
+            embedding_backend="test",
+            level="4",
+        )
+        session_id = database.create_exam_session(
+            "DIT410",
+            "Management Information Systems",
+            "DIT",
+            "4",
+            "2026-06-10",
+            "",
+            "",
+            "Room 116",
+            "admin",
+        )
+
+        self.assertEqual(database.add_matching_exam_cohort(session_id), 1)
+        roster = database.list_exam_session_students(session_id)
+        self.assertEqual([row["student_id"] for row in roster], [matching_id])
+        self.assertEqual(roster[0]["level"], "4")
 
     def test_verification_log_and_integrity_check_do_not_crash(self) -> None:
         photo = Path(self.temp_dir.name) / "student.jpg"

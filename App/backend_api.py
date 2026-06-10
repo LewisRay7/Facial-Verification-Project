@@ -123,6 +123,7 @@ def api_register_student():
     student_number = request.form.get("student_number", "").strip()
     full_name = request.form.get("full_name", "").strip()
     program = request.form.get("program", "").strip()
+    level = request.form.get("level", "").strip()
     eligible = request.form.get("eligible", "true").lower() in {"1", "true", "yes"}
     note = request.form.get("note", "").strip()
     if not photo or not student_number or not full_name:
@@ -140,6 +141,7 @@ def api_register_student():
         embedding_backend=backend,
         exam_eligible=eligible,
         eligibility_note=note,
+        level=level,
     )
     log_audit_event(
         "ADMIN_ACTION",
