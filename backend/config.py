@@ -35,6 +35,12 @@ class Settings:
         return self.environment.lower() == "production"
 
     @property
+    def database_mode(self) -> str:
+        if self.database_url.startswith(("postgres://", "postgresql://", "postgresql+")):
+            return "neon-postgresql"
+        return "sqlite-fallback"
+
+    @property
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
             return ["*"]

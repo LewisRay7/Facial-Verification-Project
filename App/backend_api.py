@@ -304,7 +304,23 @@ def _verify_uploaded():
         reference_embedding=student.get("face_embedding"),
         backend_preference="auto",
     )
-    status = "VERIFIED" if result.is_match and student.get("exam_eligible") else "NOT VERIFIED"
+    identity_matched = result.is_match
+    if identity_matched and student.get("face_embedding"):
+        candidates = [
+            candidate
+            for candidate in list_students(active_only=True)
+            if candidate.get("face_embedding")
+        ]
+        database_match = identify_face_from_embeddings(capture_path, candidates)
+        identity_matched = (
+            database_match.status == "VERIFIED"
+            and int(database_match.student_id or 0) == student_id
+        )
+    status = (
+        "VERIFIED"
+        if identity_matched and student.get("exam_eligible")
+        else "NOT VERIFIED"
+    )
     add_verification_log(
         student_id=student_id,
         result=status,
@@ -316,7 +332,7 @@ def _verify_uploaded():
         {
             "ok": True,
             "status": status,
-            "is_match": status == "VERIFIED",
+            "is_match": identity_matched,
             "score": result.score,
             "backend": result.backend,
             "message": result.message,

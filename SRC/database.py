@@ -696,12 +696,15 @@ def add_student(
             ),
         )
         connection.commit()
-        log_id = int(cursor.lastrowid)
+        new_student_id = int(cursor.lastrowid)
     log_audit_event(
-        "VERIFICATION_EVENT",
-        details=f"student_id={student_id}; result={result}; backend={backend}",
+        "STUDENT_REGISTERED",
+        details=(
+            f"student_id={new_student_id}; "
+            f"student_number_hash={hash_student_identifier(student_number)}"
+        ),
     )
-    return log_id
+    return new_student_id
 
 
 def update_student_photo(
@@ -726,6 +729,10 @@ def update_student_photo(
             ),
         )
         connection.commit()
+    log_audit_event(
+        "STUDENT_PHOTO_UPDATED",
+        details=f"student_id={student_id}; embedding_backend={embedding_backend or 'none'}",
+    )
 
 
 def update_student_details(
@@ -762,6 +769,13 @@ def update_student_details(
             ),
         )
         connection.commit()
+    log_audit_event(
+        "STUDENT_DETAILS_UPDATED",
+        details=(
+            f"student_id={student_id}; "
+            f"student_number_hash={hash_student_identifier(student_number)}"
+        ),
+    )
 
 
 def set_student_active(student_id: int, active: bool) -> None:
@@ -779,6 +793,10 @@ def set_student_active(student_id: int, active: bool) -> None:
             ),
         )
         connection.commit()
+    log_audit_event(
+        "STUDENT_STATUS_UPDATED",
+        details=f"student_id={student_id}; active={bool(active)}",
+    )
 
 
 def list_students(active_only: bool = True) -> list[dict[str, Any]]:
@@ -920,7 +938,12 @@ def add_verification_log(
             ),
         )
         connection.commit()
-        return int(cursor.lastrowid)
+        new_log_id = int(cursor.lastrowid)
+    log_audit_event(
+        "VERIFICATION_EVENT",
+        details=f"log_id={new_log_id}; student_id={student_id}; result={result}; backend={backend}",
+    )
+    return new_log_id
 
 
 def list_logs(limit: int = 100) -> list[dict[str, Any]]:

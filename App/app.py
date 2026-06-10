@@ -1030,12 +1030,32 @@ def verify_student_page() -> None:
             lightweight_threshold=lightweight_threshold,
             backend_preference=backend_preference,
         )
+        identity_matched = result.is_match
+        if identity_matched and selected_student.get("face_embedding"):
+            global_embedded_students = [
+                row for row in list_students(active_only=True) if row.get("face_embedding")
+            ]
+            database_match = identify_face_from_embeddings(
+                capture_path,
+                global_embedded_students,
+                facenet_threshold=facenet_threshold,
+                min_distance_gap=0.08,
+            )
+            identity_matched = (
+                database_match.status == "VERIFIED"
+                and int(database_match.student_id or 0) == int(selected_student["id"])
+            )
+            if not identity_matched:
+                st.error(
+                    "ACCESS DENIED: the selected student is not the closest safe "
+                    "database-wide face match."
+                )
         duration_ms = (perf_counter() - start_time) * 1000
         entry_decision = evaluate_local_exam_entry(
             int(session["id"]),
             int(selected_student["id"]),
             True,
-            result.is_match,
+            identity_matched,
         )
         status = "VERIFIED" if entry_decision["decision"] == "VERIFIED" else "NOT VERIFIED"
         match_threshold = (
@@ -1066,7 +1086,7 @@ def verify_student_page() -> None:
             )
         elif entry_decision["decision"] == "ALREADY_VERIFIED":
             st.warning(entry_decision["reason"])
-        elif result.is_match:
+        elif identity_matched:
             st.error(f"ACCESS DENIED: {entry_decision['reason']}")
         else:
             st.error(f"{status}: face did not match.")
@@ -1143,8 +1163,8 @@ def auto_identify_page() -> None:
         )
         st.info(
             "This mode L2-normalizes FaceNet embeddings, calculates approval distances "
-            "only against this session's eligible roster, and returns Unknown unless the closest distance is below "
-            "the threshold and clearly better than the next closest student."
+            "against the full biometric database, and returns Unknown unless the closest distance is below "
+            "the threshold and clearly better than the next closest student. Exam-session eligibility is checked afterward."
         )
 
     left, right = st.columns([1, 1])
@@ -1169,31 +1189,16 @@ def auto_identify_page() -> None:
             start_time = perf_counter()
             result = identify_face_from_embeddings(
                 capture_path,
-                embedded_students,
+                global_embedded_students,
                 facenet_threshold=facenet_threshold,
                 min_distance_gap=min_distance_gap,
             )
             duration_ms = (perf_counter() - start_time) * 1000
 
-        matched_student = find_student_by_id(embedded_students, result.student_id)
+        matched_student = find_student_by_id(global_embedded_students, result.student_id)
         if result.status == "UNKNOWN":
-            global_result = identify_face_from_embeddings(
-                capture_path,
-                global_embedded_students,
-                facenet_threshold=facenet_threshold,
-                min_distance_gap=min_distance_gap,
-            )
-            global_student = find_student_by_id(
-                global_embedded_students, global_result.student_id
-            )
             render_html(unknown_badge())
-            if global_result.status == "VERIFIED" and global_student:
-                st.error(
-                    "ACCESS DENIED: Recognized registered student, but they are not "
-                    "eligible for the selected exam session."
-                )
-            else:
-                st.error("ACCESS DENIED: Face not recognized.")
+            st.error("ACCESS DENIED: Face not recognized with sufficient confidence.")
             render_result_card(
                 "Unknown",
                 None,
@@ -1203,7 +1208,7 @@ def auto_identify_page() -> None:
                 result.suggested_threshold,
                 result.second_best_score,
             )
-            distance_frame = ranked_distance_frame(embedded_students, result.ranked_matches)
+            distance_frame = ranked_distance_frame(global_embedded_students, result.ranked_matches)
             if not distance_frame.empty:
                 st.caption("Closest stored student distances")
                 st.dataframe(distance_frame, use_container_width=True, hide_index=True)
@@ -1273,7 +1278,7 @@ def auto_identify_page() -> None:
                 result.suggested_threshold,
                 result.second_best_score,
             )
-            distance_frame = ranked_distance_frame(embedded_students, result.ranked_matches)
+            distance_frame = ranked_distance_frame(global_embedded_students, result.ranked_matches)
             if not distance_frame.empty:
                 st.caption("Closest stored student distances")
                 st.dataframe(distance_frame, use_container_width=True, hide_index=True)

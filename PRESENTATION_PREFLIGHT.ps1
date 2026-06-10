@@ -23,6 +23,7 @@ try {
 try {
     $ready = Invoke-RestMethod -Uri "$api/health/ready" -Method Get -TimeoutSec 90
     Check "Neon database" ($ready.database -eq "ready") $ready.database
+    Check "Cloud database mode" ($ready.database_mode -eq "neon-postgresql") $ready.database_mode
     Check "Production environment" ($ready.environment -eq "production") $ready.environment
     Check "Biometric encryption" ($ready.data_encryption_configured -eq $true) "DATA_ENCRYPTION_KEY configured"
     Check "OTP email provider" ($ready.email_provider_configured -eq $true) "Resend or SMTP configured"

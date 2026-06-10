@@ -25,7 +25,29 @@ FaceNet/MobileFaceNet-based automated exam verification system for Windows deskt
 - records expected outcome, threshold, and response time for evaluation tests
 - previews captured verification images from the logs
 - calculates accuracy, false accepts, false rejects, and average response time
-- stores data locally in SQLite
+- uses Neon PostgreSQL as the shared online authority when `DATABASE_URL` is configured
+- retains SQLite/local device storage as a last-resort offline defense fallback
+
+## Database And Deployment Modes
+
+ExamVerify uses two deliberately separate data paths:
+
+- **Cloud/production mode:** the FastAPI backend reads `DATABASE_URL` from the
+  Render environment. A PostgreSQL/Neon URL activates the shared cloud
+  database used by desktop and mobile clients.
+- **Local/demo fallback:** when `DATABASE_URL` is absent, the cloud backend can
+  start with local SQLite for development, while the Streamlit prototype uses
+  `Data/exam_verification.db`. This fallback exists for offline defense safety,
+  not as the main production database.
+
+Database credentials, JWT secrets, encryption keys, Resend keys, and SMTP
+credentials must be stored in Render or local environment variables. They must
+never be hardcoded or committed in `.env` files. The repository `.gitignore`
+excludes `.env`, local databases, captures, portraits, logs, and build output.
+
+Resend and a verified custom sending domain are optional for demonstrating
+email OTP delivery. If Resend is unavailable, the production API reports a
+clear OTP-delivery error without crashing or incorrectly approving access.
 
 ## Hardware-Friendly Design
 

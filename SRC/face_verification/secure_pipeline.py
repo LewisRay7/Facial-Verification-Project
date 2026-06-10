@@ -169,8 +169,28 @@ def run_static_liveness_check(image_path: Path) -> SecureVerificationResult:
             allowed_to_match=False,
         )
 
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    crowd_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    crowd_faces = crowd_cascade.detectMultiScale(
+        cv2.equalizeHist(gray),
+        scaleFactor=1.08,
+        minNeighbors=5,
+        minSize=(80, 80),
+    )
+    if len(crowd_faces) > 1:
+        return SecureVerificationResult(
+            liveness=LivenessResult(
+                passed=False,
+                status="MULTIPLE_FACES",
+                message="Multiple faces detected. Wait until one student is in frame.",
+                geometry_score=0.0,
+            ),
+            allowed_to_match=False,
+        )
+
     if StaticLivenessAnalyzer is None:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )

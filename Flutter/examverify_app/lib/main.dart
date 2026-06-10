@@ -497,6 +497,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       ),
       'Students' => StudentsPage(
         students: students,
+        onlineMode: onlineClient != null,
         onToggleEligibility: _toggleEligibility,
         onDeleteStudent: _deleteStudent,
       ),
@@ -3070,10 +3071,11 @@ class _VerifyPageState extends State<VerifyPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const PageHero(
+          PageHero(
             title: 'Exam Verification',
-            subtitle:
-                'Capture a live face and compare it with the selected student record offline.',
+            subtitle: widget.onlineClient == null
+                ? 'Capture a live face and compare it with the selected student using the offline fallback.'
+                : 'Capture a live face and validate identity and exam eligibility through the cloud.',
           ),
           const SectionTitle(
             title: 'Student Lookup',
@@ -3254,14 +3256,6 @@ class _VerifyPageState extends State<VerifyPage> {
         return;
       }
       final liveSignature = await FaceEngine.createSignature(storedLivePhoto);
-      final eligibleStudentIds = widget.examEligibilities
-          .where(
-            (row) =>
-                row.examSessionId == session.id &&
-                row.eligibilityStatus == 'eligible',
-          )
-          .map((row) => row.studentId)
-          .toSet();
       if (!FaceEngine.canCompareSignatures(student.signature, liveSignature)) {
         throw FaceEngineException(
           'This student does not have a compatible MobileFaceNet profile. Sync or re-enroll the student using the mobile scanner.',
@@ -3269,15 +3263,15 @@ class _VerifyPageState extends State<VerifyPage> {
       }
       final ranked = [
         for (final candidate in widget.students)
-          if (candidate.id != null && eligibleStudentIds.contains(candidate.id))
-            if (FaceEngine.canCompareSignatures(
-              candidate.signature,
-              liveSignature,
-            ))
-              MapEntry(
-                candidate,
-                FaceEngine.distance(candidate.signature, liveSignature),
-              ),
+          if (candidate.id != null &&
+              FaceEngine.canCompareSignatures(
+                candidate.signature,
+                liveSignature,
+              ))
+            MapEntry(
+              candidate,
+              FaceEngine.distance(candidate.signature, liveSignature),
+            ),
       ]..sort((a, b) => a.value.compareTo(b.value));
       final selectedMatch = ranked.firstWhere(
         (match) => match.key.studentNumber == student.studentNumber,
@@ -3625,25 +3619,10 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         }
       }
       final liveSignature = await FaceEngine.createSignature(storedLivePhoto);
-      final eligibleStudentIds = widget.examEligibilities
-          .where(
-            (row) =>
-                row.examSessionId == session.id &&
-                row.eligibilityStatus == 'eligible',
-          )
-          .map((row) => row.studentId)
-          .toSet();
-      final eligibleStudents = widget.students
-          .where(
-            (student) =>
-                student.id != null &&
-                eligibleStudentIds.contains(student.id) &&
-                student.status == 'active',
-          )
-          .toList();
       final ranked = [
-        for (final student in eligibleStudents)
-          if (FaceEngine.canCompareSignatures(student.signature, liveSignature))
+        for (final student in widget.students)
+          if (student.id != null &&
+              FaceEngine.canCompareSignatures(student.signature, liveSignature))
             MapEntry(
               student,
               FaceEngine.distance(student.signature, liveSignature),
@@ -3665,8 +3644,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
       final verified =
           bestStudent != null &&
           bestScore <= FaceEngine.identificationThreshold &&
-          hasGap &&
-          bestStudent.eligible;
+          hasGap;
       final eligibility = bestStudent == null
           ? null
           : _eligibilityFor(session, bestStudent);
@@ -3690,27 +3668,6 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
               deviceType: Platform.isWindows ? 'desktop' : 'mobile',
             );
       final approved = cloudDecision?.verified ?? sessionAllowed;
-      StudentRecord? globallyMatchedStudent;
-      if (!approved) {
-        final globalRanked = [
-          for (final student in widget.students)
-            if (FaceEngine.canCompareSignatures(
-              student.signature,
-              liveSignature,
-            ))
-              MapEntry(
-                student,
-                FaceEngine.distance(student.signature, liveSignature),
-              ),
-        ]..sort((a, b) => a.value.compareTo(b.value));
-        if (globalRanked.isNotEmpty &&
-            globalRanked.first.value <= FaceEngine.identificationThreshold &&
-            (globalRanked.length == 1 ||
-                globalRanked[1].value - globalRanked.first.value >=
-                    FaceEngine.identificationMinimumGap)) {
-          globallyMatchedStudent = globalRanked.first.key;
-        }
-      }
       await widget.onVerificationSaved(
         VerificationRecord(
           time: DateTime.now(),
@@ -3740,8 +3697,6 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           ? 'Access denied: $matchedName is registered but not eligible for ${session.courseCode}.'
           : bestStudent != null && eligibility?.attendanceStatus == 'verified'
           ? 'Already verified: $matchedName was already verified for ${session.courseCode}.'
-          : globallyMatchedStudent != null
-          ? 'Access denied: ${globallyMatchedStudent.fullName} is recognized but not eligible for ${session.courseCode}.'
           : 'Unauthorized: no trusted student profile matched this scan.';
       if (mounted) {
         setState(() {
@@ -4324,12 +4279,14 @@ class _KioskStatusPanel extends StatelessWidget {
 class StudentsPage extends StatefulWidget {
   const StudentsPage({
     required this.students,
+    required this.onlineMode,
     required this.onToggleEligibility,
     required this.onDeleteStudent,
     super.key,
   });
 
   final List<StudentRecord> students;
+  final bool onlineMode;
   final Future<void> Function(StudentRecord student) onToggleEligibility;
   final Future<void> Function(StudentRecord student) onDeleteStudent;
 
@@ -4388,10 +4345,11 @@ class _StudentsPageState extends State<StudentsPage> {
             subtitle:
                 'Maintain student details, registered portraits, and exam eligibility.',
           ),
-          const SectionTitle(
+          SectionTitle(
             title: 'Student Directory',
-            subtitle:
-                'Records are stored locally and remain available after closing the app.',
+            subtitle: widget.onlineMode
+                ? 'Cloud records are synchronized with a local fallback cache.'
+                : 'Offline fallback records remain available on this device.',
           ),
           if (widget.students.isNotEmpty) ...[
             TextField(

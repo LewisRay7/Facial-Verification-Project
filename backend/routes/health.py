@@ -24,6 +24,7 @@ def readiness(db: Annotated[Session, Depends(get_db)]) -> dict:
         "ok": True,
         "service": "ExamVerify Cloud API",
         "database": "ready",
+        "database_mode": settings.database_mode,
         "environment": settings.environment,
         "email_provider_configured": bool(
             settings.resend_api_key
