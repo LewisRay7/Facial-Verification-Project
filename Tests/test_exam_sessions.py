@@ -15,7 +15,7 @@ os.environ["SUPER_ADMIN_PASSWORD"] = "Admin@12345"
 
 from fastapi.testclient import TestClient
 
-from backend.auth.security import create_access_token, hash_password
+from backend.auth.security import create_access_token, hash_password, verify_password
 from backend.database import SessionLocal, engine
 from backend.main import create_app
 from backend.models.tables import Student, User
@@ -118,6 +118,37 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["database"], "ready")
         self.assertTrue(result["data_encryption_configured"])
+
+    def test_super_admin_can_reset_operator_password_and_clear_lockout(self) -> None:
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.username == "invigilator_a").one()
+            user.failed_attempts = 4
+            db.commit()
+
+        forbidden = self.client.post(
+            "/admin/users/reset-password",
+            headers=self.invigilator_b_headers,
+            json={
+                "username": "invigilator_a",
+                "temporary_password": "FreshPass@123",
+            },
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        response = self.client.post(
+            "/admin/users/reset-password",
+            headers=self.headers,
+            json={
+                "username": "invigilator_a",
+                "temporary_password": "FreshPass@123",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.username == "invigilator_a").one()
+            self.assertTrue(verify_password("FreshPass@123", user.password_hash))
+            self.assertEqual(user.failed_attempts, 0)
+            self.assertIsNone(user.locked_until)
 
     def add(self, student_id: int, kind: str = "regular") -> None:
         response = self.client.post(

@@ -4692,45 +4692,160 @@ class _AdminRequestsPageState extends State<AdminRequestsPage> {
 
   Future<String?> _requestTemporaryPassword(AdminAccessRequest request) async {
     final controller = TextEditingController();
+    final confirmationController = TextEditingController();
+    String? validationMessage;
     final password = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Approve access request'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Set a temporary password for ${request.fullName}.'),
-            const SizedBox(height: 14),
-            TextField(
-              controller: controller,
-              obscureText: true,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Temporary password',
-                helperText: 'Minimum 8 characters',
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Approve access request'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Set a temporary password for ${request.fullName}.'),
+              const SizedBox(height: 14),
+              TextField(
+                controller: controller,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Temporary password',
+                  helperText: 'Minimum 8 characters',
+                ),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: confirmationController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Confirm temporary password',
+                  errorText: validationMessage,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                final confirmation = confirmationController.text.trim();
+                if (value.length < 8) {
+                  setDialogState(
+                    () => validationMessage = 'Use at least 8 characters.',
+                  );
+                } else if (value != confirmation) {
+                  setDialogState(
+                    () => validationMessage = 'Passwords do not match.',
+                  );
+                } else {
+                  Navigator.of(dialogContext).pop(value);
+                }
+              },
+              child: const Text('Approve'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = controller.text.trim();
-              if (value.length >= 8) {
-                Navigator.of(dialogContext).pop(value);
-              }
-            },
-            child: const Text('Approve'),
-          ),
-        ],
       ),
     );
     controller.dispose();
+    confirmationController.dispose();
+    return password;
+  }
+
+  Future<void> _resetPassword(AdminAccessRequest request) async {
+    final client = widget.client;
+    if (client == null) return;
+    final password = await _requestResetPassword(request);
+    if (password == null) return;
+    setState(() => loading = true);
+    try {
+      await client.resetUserPassword(request.username, password);
+      if (!mounted) return;
+      setState(() {
+        message =
+            'Temporary password reset for ${request.fullName}. Share it securely.';
+        messageColor = AppColors.green;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        message = 'The temporary password could not be reset.';
+        messageColor = AppColors.red;
+      });
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<String?> _requestResetPassword(AdminAccessRequest request) async {
+    final controller = TextEditingController();
+    final confirmationController = TextEditingController();
+    String? validationMessage;
+    final password = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Reset operator password'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Set a new temporary password for ${request.fullName}.'),
+              const SizedBox(height: 14),
+              TextField(
+                controller: controller,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'New temporary password',
+                  helperText: 'Minimum 8 characters',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: confirmationController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'Confirm temporary password',
+                  errorText: validationMessage,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                final confirmation = confirmationController.text.trim();
+                if (value.length < 8) {
+                  setDialogState(
+                    () => validationMessage = 'Use at least 8 characters.',
+                  );
+                } else if (value != confirmation) {
+                  setDialogState(
+                    () => validationMessage = 'Passwords do not match.',
+                  );
+                } else {
+                  Navigator.of(dialogContext).pop(value);
+                }
+              },
+              child: const Text('Reset password'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    confirmationController.dispose();
     return password;
   }
 
@@ -4869,6 +4984,14 @@ class _AdminRequestsPageState extends State<AdminRequestsPage> {
                                   ? null
                                   : () => _decide(request, 'approved'),
                               child: const Text('Approve'),
+                            ),
+                          ] else if (request.status == 'approved') ...[
+                            OutlinedButton.icon(
+                              onPressed: loading
+                                  ? null
+                                  : () => _resetPassword(request),
+                              icon: const Icon(Icons.password_outlined),
+                              label: const Text('Reset password'),
                             ),
                           ],
                         ],
@@ -10280,6 +10403,13 @@ class OnlineBackendClient {
     await _postJson('/admin/access-requests/$requestId/decision', {
       'status': status,
       'temporary_password': ?temporaryPassword,
+    });
+  }
+
+  Future<void> resetUserPassword(String username, String password) async {
+    await _postJson('/admin/users/reset-password', {
+      'username': username,
+      'temporary_password': password,
     });
   }
 

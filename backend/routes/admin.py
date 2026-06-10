@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 from backend.auth.security import current_user, hash_password, require_roles, user_payload
 from backend.database import get_db
 from backend.logs.audit import log_event
-from backend.models.schemas import AdminAccessRequestCreate, AdminDecisionRequest, ApiMessage
+from backend.models.schemas import (
+    AdminAccessRequestCreate,
+    AdminDecisionRequest,
+    ApiMessage,
+    UserPasswordResetRequest,
+)
 from backend.models.tables import AdminRequest, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -101,6 +106,36 @@ def list_users(
 ) -> dict:
     rows = db.query(User).filter(User.active.is_(True)).order_by(User.full_name).all()
     return {"ok": True, "users": [user_payload(row) for row in rows]}
+
+
+@router.post("/users/reset-password", response_model=ApiMessage)
+def reset_user_password(
+    payload: UserPasswordResetRequest,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin"))],
+) -> ApiMessage:
+    username = payload.username.strip().lower()
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.role == "Super Admin":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use the deployment recovery process for Super Admin credentials",
+        )
+    user.password_hash = hash_password(payload.temporary_password)
+    user.failed_attempts = 0
+    user.locked_until = None
+    user.pending_otp_hash = None
+    user.pending_otp_expires_at = None
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="USER_PASSWORD_RESET",
+        target=user.username,
+    )
+    db.commit()
+    return ApiMessage(message=f"Temporary password reset for {user.full_name}.")
 
 
 def _request_to_dict(row: AdminRequest) -> dict:

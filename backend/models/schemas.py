@@ -43,6 +43,11 @@ class AdminDecisionRequest(BaseModel):
     temporary_password: str | None = Field(default=None, min_length=8)
 
 
+class UserPasswordResetRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    temporary_password: str = Field(min_length=8, max_length=200)
+
+
 class StudentSyncIn(BaseModel):
     student_number_hash: str
     student_number_mask: str
