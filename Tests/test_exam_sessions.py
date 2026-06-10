@@ -4,11 +4,13 @@ import os
 from pathlib import Path
 import unittest
 from io import BytesIO
+from unittest.mock import patch
 from openpyxl import Workbook
 
 TEST_DB = Path(__file__).resolve().parent / "exam_sessions_test.db"
 TEST_DB.unlink(missing_ok=True)
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
+os.environ["EXAMVERIFY_ENV"] = "production"
 os.environ["JWT_SECRET"] = "exam-session-test-jwt"
 os.environ["DATA_ENCRYPTION_KEY"] = "exam-session-test-data-key"
 os.environ["SUPER_ADMIN_PASSWORD"] = "Admin@12345"
@@ -149,6 +151,20 @@ class ExamSessionEligibilityTests(unittest.TestCase):
             self.assertTrue(verify_password("FreshPass@123", user.password_hash))
             self.assertEqual(user.failed_attempts, 0)
             self.assertIsNone(user.locked_until)
+
+    def test_production_login_reports_otp_delivery_failure_separately(self) -> None:
+        with patch("backend.routes.auth.send_otp_email", return_value=False):
+            response = self.client.post(
+                "/auth/login",
+                json={
+                    "username": "invigilator_b",
+                    "password": "Verify@12345",
+                    "requested_role": "Invigilator",
+                },
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("password was accepted", response.json()["detail"])
 
     def add(self, student_id: int, kind: str = "regular") -> None:
         response = self.client.post(

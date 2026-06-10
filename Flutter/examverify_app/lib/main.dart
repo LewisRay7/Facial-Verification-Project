@@ -951,10 +951,16 @@ class _LoginPageState extends State<LoginPage>
     if (message.isEmpty ||
         lower.contains('string_too_short') ||
         lower.contains('invalid credentials') ||
-        lower.contains('password') ||
         lower.contains('username') ||
-        lower.contains('email') ||
         lower.contains('unauthorized')) {
+      return 'Wrong email/username or password. Please check your details and try again.';
+    }
+    if (lower.contains('verification email') ||
+        lower.contains('could not be delivered') ||
+        lower.contains('mail settings')) {
+      return 'Your password was accepted, but the OTP email could not be delivered. Contact the Super Admin.';
+    }
+    if (lower.contains('password')) {
       return 'Wrong email/username or password. Please check your details and try again.';
     }
     if (lower.contains('locked')) {
@@ -1089,6 +1095,7 @@ class _LoginPageState extends State<LoginPage>
             canSubmit: _hasCredentials,
             error: error,
             statusMessage: statusMessage,
+            onlineMode: onlineMode,
             sessionMessage: widget.message,
             progress: _motionController.value,
             onSubmit: _submitCredentials,
@@ -1270,6 +1277,7 @@ class _LoginGlassPanel extends StatelessWidget {
     required this.enabled,
     required this.canSubmit,
     required this.statusMessage,
+    required this.onlineMode,
     required this.progress,
     required this.onSubmit,
     required this.onDeveloperOpen,
@@ -1290,6 +1298,7 @@ class _LoginGlassPanel extends StatelessWidget {
   final bool enabled;
   final bool canSubmit;
   final String? statusMessage;
+  final bool onlineMode;
   final String? error;
   final String? sessionMessage;
   final double progress;
@@ -1335,6 +1344,13 @@ class _LoginGlassPanel extends StatelessWidget {
           const Text(
             'Select your role and continue securely.',
             style: TextStyle(color: AppColors.muted, height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          _StatusPill(
+            message: onlineMode
+                ? 'Cloud authentication active'
+                : 'Offline prototype authentication active',
+            color: onlineMode ? AppColors.green : AppColors.amber,
           ),
           const SizedBox(height: 22),
           _RoleSelector(
