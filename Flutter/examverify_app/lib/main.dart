@@ -126,6 +126,7 @@ class ExamVerifyShell extends StatefulWidget {
 class _ExamVerifyShellState extends State<ExamVerifyShell> {
   final ExamVerifyStore store = ExamVerifyStore();
   int selectedIndex = 0;
+  bool autoIdentifyNavigationOpen = false;
   List<StudentRecord> students = const [];
   List<VerificationRecord> logs = const [];
   List<ExamSessionRecord> examSessions = const [];
@@ -418,6 +419,8 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         final safeIndex = selectedIndex >= availableItems.length
             ? 0
             : selectedIndex;
+        final autoIdentifyKiosk =
+            isDesktop && availableItems[safeIndex].label == 'Auto Identify';
         final body = _pageForItem(availableItems[safeIndex]);
 
         return Scaffold(
@@ -435,21 +438,71 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
             ),
             child: SafeArea(
               child: isDesktop
-                  ? Row(
-                      children: [
-                        SideNavigation(
-                          navItems: availableItems,
-                          selectedIndex: safeIndex,
-                          user: authUser!,
-                          onLogout: _logout,
-                          onSelected: (index) => setState(() {
-                            _touchSession();
-                            selectedIndex = index;
-                          }),
-                        ),
-                        Expanded(child: body),
-                      ],
-                    )
+                  ? autoIdentifyKiosk
+                        ? Stack(
+                            children: [
+                              Positioned.fill(child: body),
+                              if (autoIdentifyNavigationOpen)
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    onTap: () => setState(
+                                      () => autoIdentifyNavigationOpen = false,
+                                    ),
+                                    child: Container(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.34,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              AnimatedPositioned(
+                                duration: const Duration(milliseconds: 240),
+                                curve: Curves.easeOutCubic,
+                                left: autoIdentifyNavigationOpen ? 0 : -292,
+                                top: 0,
+                                bottom: 0,
+                                child: SideNavigation(
+                                  navItems: availableItems,
+                                  selectedIndex: safeIndex,
+                                  user: authUser!,
+                                  onLogout: _logout,
+                                  onSelected: (index) => setState(() {
+                                    _touchSession();
+                                    selectedIndex = index;
+                                    autoIdentifyNavigationOpen = false;
+                                  }),
+                                ),
+                              ),
+                              AnimatedPositioned(
+                                duration: const Duration(milliseconds: 240),
+                                curve: Curves.easeOutCubic,
+                                left: autoIdentifyNavigationOpen ? 304 : 12,
+                                bottom: 16,
+                                child: _KioskNavigationToggle(
+                                  open: autoIdentifyNavigationOpen,
+                                  onPressed: () => setState(
+                                    () => autoIdentifyNavigationOpen =
+                                        !autoIdentifyNavigationOpen,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : Row(
+                            children: [
+                              SideNavigation(
+                                navItems: availableItems,
+                                selectedIndex: safeIndex,
+                                user: authUser!,
+                                onLogout: _logout,
+                                onSelected: (index) => setState(() {
+                                  _touchSession();
+                                  selectedIndex = index;
+                                }),
+                              ),
+                              Expanded(child: body),
+                            ],
+                          )
                   : Column(
                       children: [
                         MobileHeader(
@@ -3422,6 +3475,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         .where((row) => row.isActive)
         .firstOrNull;
     return AppScrollView(
+      maxWidth: desktopCameraAvailable ? 1800 : 1380,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -5210,6 +5264,50 @@ class SideNavigation extends StatelessWidget {
           ),
           const SizedBox(height: 12),
         ],
+      ),
+    );
+  }
+}
+
+class _KioskNavigationToggle extends StatelessWidget {
+  const _KioskNavigationToggle({required this.open, required this.onPressed});
+
+  final bool open;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.panel,
+      elevation: 8,
+      shadowColor: Colors.black54,
+      shape: StadiumBorder(
+        side: BorderSide(color: AppColors.cyan.withValues(alpha: 0.55)),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                open ? Icons.menu_open_rounded : Icons.menu_rounded,
+                color: AppColors.cyan,
+                size: 20,
+              ),
+              const SizedBox(width: 7),
+              Text(
+                open ? 'Close menu' : 'Menu',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -8231,9 +8329,10 @@ class AppTextField extends StatelessWidget {
 }
 
 class AppScrollView extends StatelessWidget {
-  const AppScrollView({required this.child, super.key});
+  const AppScrollView({required this.child, this.maxWidth = 1380, super.key});
 
   final Widget child;
+  final double maxWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -8246,7 +8345,7 @@ class AppScrollView extends StatelessWidget {
         child: Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1380),
+            constraints: BoxConstraints(maxWidth: maxWidth),
             child: child,
           ),
         ),
