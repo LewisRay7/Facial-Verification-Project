@@ -3829,20 +3829,49 @@ class _AutoIdentifyOutcome {
 
 class ExamVerifyFeedback {
   static Future<void> playVerificationTone(VerificationStatus status) async {
-    if (Platform.isWindows) {
-      final script = status == VerificationStatus.verified
-          ? '[console]::beep(880,180); Start-Sleep -Milliseconds 70; [console]::beep(1175,220)'
-          : '[console]::beep(330,240); Start-Sleep -Milliseconds 80; [console]::beep(220,280)';
-      await Process.run('powershell.exe', ['-NoProfile', '-Command', script]);
-      return;
-    }
-    final sound = status == VerificationStatus.verified
-        ? SystemSoundType.click
-        : SystemSoundType.alert;
-    await SystemSound.play(sound);
-    if (status != VerificationStatus.verified) {
-      await Future<void>.delayed(const Duration(milliseconds: 180));
-      await SystemSound.play(SystemSoundType.alert);
+    try {
+      if (Platform.isWindows) {
+        final phrase = status == VerificationStatus.verified
+            ? 'Access granted'
+            : 'Access denied';
+        final tones = status == VerificationStatus.verified
+            ? '[console]::beep(880,180); Start-Sleep -Milliseconds 70; [console]::beep(1175,220)'
+            : '[console]::beep(330,240); Start-Sleep -Milliseconds 80; [console]::beep(220,280)';
+        final script =
+            r'''
+try {
+  Add-Type -AssemblyName System.Speech
+  $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+  $female = $synth.GetInstalledVoices() |
+    Where-Object { $_.Enabled -and $_.VoiceInfo.Gender -eq 'Female' } |
+    Select-Object -First 1
+  if ($female) { $synth.SelectVoice($female.VoiceInfo.Name) }
+  $synth.Rate = 1
+  $synth.Volume = 100
+  $synth.Speak('__PHRASE__')
+} catch {}
+__TONES__
+'''
+                .replaceFirst('__PHRASE__', phrase)
+                .replaceFirst('__TONES__', tones);
+        await Process.run('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          script,
+        ]);
+        return;
+      }
+      final sound = status == VerificationStatus.verified
+          ? SystemSoundType.click
+          : SystemSoundType.alert;
+      await SystemSound.play(sound);
+      if (status != VerificationStatus.verified) {
+        await Future<void>.delayed(const Duration(milliseconds: 180));
+        await SystemSound.play(SystemSoundType.alert);
+      }
+    } catch (_) {
+      // Feedback must never interrupt or change a verification decision.
     }
   }
 }
