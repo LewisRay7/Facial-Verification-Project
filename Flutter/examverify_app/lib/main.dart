@@ -3828,6 +3828,10 @@ class _AutoIdentifyOutcome {
 }
 
 class ExamVerifyFeedback {
+  static const MethodChannel _mobileSpeech = MethodChannel(
+    'examverify/mobile_speech',
+  );
+
   static Future<void> playVerificationTone(VerificationStatus status) async {
     try {
       if (Platform.isWindows) {
@@ -3861,6 +3865,13 @@ __TONES__
           script,
         ]);
         return;
+      }
+      if (Platform.isAndroid) {
+        await _mobileSpeech.invokeMethod<void>('speak', {
+          'text': status == VerificationStatus.verified
+              ? 'Access granted'
+              : 'Access denied',
+        });
       }
       final sound = status == VerificationStatus.verified
           ? SystemSoundType.click
@@ -5869,6 +5880,14 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                             onPressed: () => _complete(session),
                             child: const Text('Complete'),
                           ),
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.red,
+                            ),
+                            onPressed: () => _delete(session),
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text('Delete'),
+                          ),
                         ],
                       ),
                     ],
@@ -5910,6 +5929,41 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
   Future<void> _complete(ExamSessionRecord session) async {
     await widget.client!.completeExamSession(session.id);
     await widget.onChanged();
+  }
+
+  Future<void> _delete(ExamSessionRecord session) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete exam session?'),
+        content: Text(
+          '${session.courseCode} - ${session.courseName} will be permanently deleted. '
+          'Sessions with verification history cannot be deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete session'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => busy = true);
+    try {
+      await widget.client!.deleteExamSession(session.id);
+      await widget.onChanged();
+      if (mounted) setState(() => message = '${session.courseCode} deleted.');
+    } catch (error) {
+      if (mounted) setState(() => message = error.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   Future<void> _addStudent(ExamSessionRecord session) async {
@@ -10492,6 +10546,10 @@ class OnlineBackendClient {
 
   Future<void> completeExamSession(int sessionId) async {
     await _postJson('/exam-sessions/$sessionId/complete', {});
+  }
+
+  Future<void> deleteExamSession(int sessionId) async {
+    await _deleteJson('/exam-sessions/$sessionId');
   }
 
   Future<void> addExamEligibility({

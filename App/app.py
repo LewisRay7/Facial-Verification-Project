@@ -29,6 +29,7 @@ from SRC.database import (
     authenticate_user,
     clear_verification_logs,
     create_exam_session,
+    delete_exam_session,
     dashboard_summary,
     evaluation_summary,
     get_student_by_number,
@@ -1673,12 +1674,24 @@ def exam_sessions_page() -> None:
                 f"{session['program']} Level {session['level']} | "
                 f"{session['exam_date']} | {session['venue']}"
             )
-            left, middle = st.columns(2)
+            left, middle, right = st.columns(3)
             if left.button("Activate", key=f"activate_{session['id']}"):
                 set_exam_session_status(session["id"], "active")
                 st.rerun()
             if middle.button("Complete", key=f"complete_{session['id']}"):
                 set_exam_session_status(session["id"], "completed")
+                st.rerun()
+            confirm_delete = right.checkbox(
+                "Confirm delete",
+                key=f"confirm_delete_session_{session['id']}",
+            )
+            if right.button(
+                "Delete session",
+                key=f"delete_session_{session['id']}",
+                disabled=not confirm_delete,
+            ):
+                delete_exam_session(session["id"])
+                st.success("Exam session deleted.")
                 st.rerun()
             invigilators = list_invigilator_users()
             if invigilators:

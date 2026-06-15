@@ -220,6 +220,28 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         ).json()["eligible_students"]
         self.assertEqual([row["student_name"] for row in roster], ["John"])
 
+    def test_empty_exam_session_can_be_deleted(self):
+        response = self.client.delete(
+            f"/exam-sessions/{self.session_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        missing = self.client.get(
+            f"/exam-sessions/{self.session_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(missing.status_code, 404)
+
+    def test_exam_session_with_verification_history_cannot_be_deleted(self):
+        self.add(self.john_id)
+        self.assertEqual(self.verify(self.john_id)["decision"], "VERIFIED")
+        response = self.client.delete(
+            f"/exam-sessions/{self.session_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("audit trail", response.json()["detail"])
+
     def test_csv_import_links_existing_faces_and_reports_issues(self):
         with SessionLocal() as db:
             no_face = Student(
