@@ -3774,21 +3774,61 @@ class _AutoIdentifyOutcome {
 }
 
 class ExamVerifyFeedback {
+  static const MethodChannel _mobileSpeech = MethodChannel(
+    'examverify/mobile_speech',
+  );
+
   static Future<void> playVerificationTone(VerificationStatus status) async {
-    if (Platform.isWindows) {
-      final script = status == VerificationStatus.verified
-          ? '[console]::beep(880,180); Start-Sleep -Milliseconds 70; [console]::beep(1175,220)'
-          : '[console]::beep(330,240); Start-Sleep -Milliseconds 80; [console]::beep(220,280)';
-      await Process.run('powershell.exe', ['-NoProfile', '-Command', script]);
-      return;
-    }
-    final sound = status == VerificationStatus.verified
-        ? SystemSoundType.click
-        : SystemSoundType.alert;
-    await SystemSound.play(sound);
-    if (status != VerificationStatus.verified) {
-      await Future<void>.delayed(const Duration(milliseconds: 180));
-      await SystemSound.play(SystemSoundType.alert);
+    try {
+      if (Platform.isWindows) {
+        final phrase = status == VerificationStatus.verified
+            ? 'Access granted'
+            : 'Access denied';
+        final tones = status == VerificationStatus.verified
+            ? '[console]::beep(880,180); Start-Sleep -Milliseconds 70; [console]::beep(1175,220)'
+            : '[console]::beep(330,240); Start-Sleep -Milliseconds 80; [console]::beep(220,280)';
+        final script =
+            r'''
+try {
+  Add-Type -AssemblyName System.Speech
+  $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+  $female = $synth.GetInstalledVoices() |
+    Where-Object { $_.Enabled -and $_.VoiceInfo.Gender -eq 'Female' } |
+    Select-Object -First 1
+  if ($female) { $synth.SelectVoice($female.VoiceInfo.Name) }
+  $synth.Rate = 1
+  $synth.Volume = 100
+  $synth.Speak('__PHRASE__')
+} catch {}
+__TONES__
+'''
+                .replaceFirst('__PHRASE__', phrase)
+                .replaceFirst('__TONES__', tones);
+        await Process.run('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          script,
+        ]);
+        return;
+      }
+      if (Platform.isAndroid) {
+        await _mobileSpeech.invokeMethod<void>('speak', {
+          'text': status == VerificationStatus.verified
+              ? 'Access granted'
+              : 'Access denied',
+        });
+      }
+      final sound = status == VerificationStatus.verified
+          ? SystemSoundType.click
+          : SystemSoundType.alert;
+      await SystemSound.play(sound);
+      if (status != VerificationStatus.verified) {
+        await Future<void>.delayed(const Duration(milliseconds: 180));
+        await SystemSound.play(SystemSoundType.alert);
+      }
+    } catch (_) {
+      // Feedback must never interrupt or change a verification decision.
     }
   }
 }
@@ -5742,6 +5782,14 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                             onPressed: () => _complete(session),
                             child: const Text('Complete'),
                           ),
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.red,
+                            ),
+                            onPressed: () => _delete(session),
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text('Delete'),
+                          ),
                         ],
                       ),
                     ],
@@ -5783,6 +5831,41 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
   Future<void> _complete(ExamSessionRecord session) async {
     await widget.client!.completeExamSession(session.id);
     await widget.onChanged();
+  }
+
+  Future<void> _delete(ExamSessionRecord session) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete exam session?'),
+        content: Text(
+          '${session.courseCode} - ${session.courseName} will be permanently deleted. '
+          'Sessions with verification history cannot be deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete session'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => busy = true);
+    try {
+      await widget.client!.deleteExamSession(session.id);
+      await widget.onChanged();
+      if (mounted) setState(() => message = '${session.courseCode} deleted.');
+    } catch (error) {
+      if (mounted) setState(() => message = error.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   Future<void> _addStudent(ExamSessionRecord session) async {
@@ -10364,6 +10447,10 @@ class OnlineBackendClient {
 
   Future<void> completeExamSession(int sessionId) async {
     await _postJson('/exam-sessions/$sessionId/complete', {});
+  }
+
+  Future<void> deleteExamSession(int sessionId) async {
+    await _deleteJson('/exam-sessions/$sessionId');
   }
 
   Future<void> addExamEligibility({

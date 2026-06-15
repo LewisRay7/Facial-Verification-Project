@@ -1156,6 +1156,24 @@ def set_exam_session_status(session_id: int, status: str) -> None:
         connection.commit()
 
 
+def delete_exam_session(session_id: int) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            "DELETE FROM exam_session_invigilators WHERE exam_session_id = ?",
+            (session_id,),
+        )
+        connection.execute(
+            "DELETE FROM exam_import_audits WHERE exam_session_id = ?",
+            (session_id,),
+        )
+        connection.execute(
+            "DELETE FROM exam_session_students WHERE exam_session_id = ?",
+            (session_id,),
+        )
+        connection.execute("DELETE FROM exam_sessions WHERE id = ?", (session_id,))
+        connection.commit()
+
+
 def add_exam_session_student(
     session_id: int,
     student_id: int,

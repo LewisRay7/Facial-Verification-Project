@@ -118,6 +118,33 @@ class LocalDatabaseStabilizationTests(unittest.TestCase):
         self.assertEqual([row["student_id"] for row in roster], [matching_id])
         self.assertEqual(roster[0]["level"], "4")
 
+    def test_exam_session_delete_removes_related_local_records(self) -> None:
+        photo = Path(self.temp_dir.name) / "student.jpg"
+        photo.write_bytes(b"test portrait")
+        student_id = database.add_student("2410475", "Delete Test", "DIT", photo)
+        session_id = database.create_exam_session(
+            "DIT411",
+            "Delete Test Session",
+            "DIT",
+            "4",
+            "2026-06-11",
+            "",
+            "",
+            "Room 117",
+            "admin",
+        )
+        database.add_exam_session_student(session_id, student_id)
+        database.assign_exam_session_invigilator(
+            session_id,
+            "invigilator",
+            "admin",
+        )
+
+        database.delete_exam_session(session_id)
+
+        self.assertNotIn(session_id, [row["id"] for row in database.list_exam_sessions()])
+        self.assertEqual(database.list_exam_session_students(session_id), [])
+
     def test_verification_log_and_integrity_check_do_not_crash(self) -> None:
         photo = Path(self.temp_dir.name) / "student.jpg"
         photo.write_bytes(b"test portrait")

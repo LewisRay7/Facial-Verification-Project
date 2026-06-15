@@ -141,6 +141,41 @@ def complete_exam_session(
     return {"ok": True, "exam_session": _session_dict(row)}
 
 
+@router.delete("/{session_id}")
+def delete_exam_session(
+    session_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    row = _session_or_404(db, session_id)
+    if db.query(VerificationLog).filter(VerificationLog.exam_session_id == session_id).count():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This exam session has verification history and cannot be deleted. "
+                "Complete it instead to preserve the audit trail."
+            ),
+        )
+    db.query(ExamSessionInvigilator).filter(
+        ExamSessionInvigilator.exam_session_id == session_id
+    ).delete(synchronize_session=False)
+    db.query(ExamSessionStudent).filter(
+        ExamSessionStudent.exam_session_id == session_id
+    ).delete(synchronize_session=False)
+    db.query(ExamImportAudit).filter(
+        ExamImportAudit.exam_session_id == session_id
+    ).delete(synchronize_session=False)
+    db.delete(row)
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="EXAM_SESSION_DELETED",
+        target=f"{row.course_code}:{session_id}",
+    )
+    db.commit()
+    return {"ok": True, "message": f"Exam session {row.course_code} deleted."}
+
+
 @router.post("/{session_id}/assign-invigilator")
 def assign_invigilator(
     session_id: int,
