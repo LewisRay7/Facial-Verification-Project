@@ -4,7 +4,7 @@ FaceNet/MobileFaceNet-based automated exam verification system for Windows deskt
 
 ## What This Prototype Does
 
-- registers students with student number, name, program, and photo
+- registers students with student number, name, program, level, status, and photo
 - records whether each student is eligible to write the exam
 - edits student details and replaces registered photos
 - deactivates students without removing old verification logs
@@ -14,6 +14,10 @@ FaceNet/MobileFaceNet-based automated exam verification system for Windows deskt
 - requires the selected student to also be the closest database-wide match during Verify, reducing John/Paul/Jack mismatches
 - supports continuous desktop kiosk auto-identification for exam-room entry
 - keeps Android/mobile scanning manual to avoid heat, battery drain, and camera crashes
+- provides spoken `Access granted` / `Access denied` feedback on Windows and Android
+- manages course-specific exam sessions, eligible rosters, invigilator assignments, and explicit exceptions
+- prevents duplicate entry to the same exam session using an atomic cloud attendance decision
+- allows confirmed deletion of empty exam sessions while protecting sessions that contain verification history
 - displays the registered/stored student image and program in verification results and logs
 - displays face distance, second-best distance, threshold, response time, and suggested threshold
 - reports low-confidence matches when the closest face is slightly above the threshold
@@ -234,6 +238,20 @@ Platform setup:
 6. If multiple faces are visible, recognition pauses until the frame is clear.
 
 The app uses sidebar navigation so the webcam capture component is only loaded on camera-based pages. Moving to another page releases the camera in the browser.
+
+## Final Verified Build Status
+
+The final stabilization baseline completed successfully on June 15, 2026:
+
+- 29 Python backend, local database, and liveness-safety tests passed
+- Flutter static analysis reported no issues
+- Flutter interface tests passed
+- Windows desktop debug build completed successfully
+- Android release build completed successfully and was installed on a physical device
+
+These checks confirm implementation stability for the demonstrated workflows,
+but they do not replace larger institutional-scale biometric accuracy,
+concurrency, usability, and security testing.
 
 ## Final Testing Checklist
 

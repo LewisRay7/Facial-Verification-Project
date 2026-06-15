@@ -10,6 +10,7 @@
 6. Use a prepared active session with two face-enrolled eligible students.
 7. Keep one registered-but-not-eligible student ready for the denial demo.
 8. Do not tune thresholds during the presentation.
+9. Confirm the phone and laptop volume are audible for spoken access feedback.
 
 ## Recommended Demo Sequence
 
@@ -20,6 +21,8 @@
 5. Scan the same student again and show `ALREADY VERIFIED`, invigilator, and device.
 6. Scan a registered student outside the selected session and show access denied.
 7. Show the session-specific verification log and evaluation metrics.
+8. Explain that empty setup sessions can be deleted, but sessions with
+   verification history are protected to preserve audit evidence.
 
 ## Strong Defense Explanation
 
@@ -67,3 +70,24 @@ No. Imports only link student identifiers to existing biometric profiles.
 **What protects biometric records?**  
 Cloud portraits and biometric profiles are encrypted using AES-256-GCM, with
 portrait integrity hashes and role-controlled access.
+
+**What stops Paul, who is registered, from writing John's exam?**
+
+Face recognition identifies Paul. The selected course-specific session roster
+then checks whether Paul is authorized for that examination. Registration alone
+does not grant exam entry.
+
+**Can an administrator erase an exam session after students are verified?**
+
+No. Empty setup sessions can be deleted after confirmation, but any session
+with verification history is protected to preserve the audit trail.
+
+## Final Stability Baseline
+
+Verified on June 15, 2026:
+
+- 29 Python backend, local database, and liveness-safety tests passed.
+- Flutter static analysis reported no issues.
+- Flutter interface tests passed.
+- Windows desktop and Android release builds completed successfully.
+- The Android release was installed on a physical TECNO device.
