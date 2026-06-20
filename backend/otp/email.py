@@ -59,7 +59,7 @@ def email_delivery_status() -> dict[str, object]:
         "resend_test_sender": resend_test_sender,
         "smtp_fallback_configured": smtp_configured,
         "arbitrary_recipient_sender_configured": bool(
-            smtp_configured or (resend_configured and sender_domain and not resend_test_sender)
+            resend_configured and sender_domain and not resend_test_sender
         ),
     }
 

@@ -79,6 +79,20 @@ class OtpEmailTests(unittest.TestCase):
         self.assertFalse(status["resend_test_sender"])
         self.assertTrue(status["arbitrary_recipient_sender_configured"])
 
+    def test_smtp_configuration_does_not_claim_hosted_delivery_readiness(self) -> None:
+        settings = _settings(
+            resend_api_key="re_test",
+            resend_from="ExamVerify <onboarding@resend.dev>",
+            smtp_host="smtp.example.edu",
+            smtp_user="otp@example.edu",
+            smtp_password="secret",
+            smtp_from="otp@example.edu",
+        )
+        with patch.object(email, "settings", settings):
+            status = email.email_delivery_status()
+        self.assertTrue(status["smtp_fallback_configured"])
+        self.assertFalse(status["arbitrary_recipient_sender_configured"])
+
 
 if __name__ == "__main__":
     unittest.main()
