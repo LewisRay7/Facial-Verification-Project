@@ -94,12 +94,12 @@ def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> dic
             "Your password was accepted, but the verification email could not "
             "be delivered. Contact the system administrator."
         )
-        if delivery["resend_test_sender"] and not delivery["smtp_fallback_configured"]:
+        if delivery["resend_test_sender"]:
             detail = (
                 "Your password was accepted, but this deployment still uses "
                 "Resend's test sender, which cannot deliver OTP codes to other "
-                "approved users. Configure RESEND_FROM with a verified domain "
-                "or configure an email fallback."
+                "approved users, and the configured fallback did not deliver "
+                "the message. Configure RESEND_FROM with a verified domain."
             )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

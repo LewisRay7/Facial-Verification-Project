@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import unittest
+from dataclasses import replace
 from io import BytesIO
 from unittest.mock import patch
 from openpyxl import Workbook
@@ -18,6 +19,7 @@ os.environ["SUPER_ADMIN_PASSWORD"] = "Admin@12345"
 from fastapi.testclient import TestClient
 
 from backend.auth.security import create_access_token, hash_password, verify_password
+from backend.config import settings as backend_settings
 from backend.database import SessionLocal, engine
 from backend.main import create_app
 from backend.models.tables import Student, User
@@ -113,7 +115,15 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         self.client.post(f"/exam-sessions/{self.session_id}/activate", headers=self.headers)
 
     def test_readiness_checks_database_and_security_configuration(self) -> None:
-        response = self.client.get("/health/ready")
+        with patch(
+            "backend.routes.health.settings",
+            replace(
+                backend_settings,
+                environment="production",
+                data_encryption_key="exam-session-test-data-key",
+            ),
+        ):
+            response = self.client.get("/health/ready")
 
         self.assertEqual(response.status_code, 200)
         result = response.json()
@@ -156,7 +166,13 @@ class ExamSessionEligibilityTests(unittest.TestCase):
             self.assertIsNone(user.locked_until)
 
     def test_production_login_reports_otp_delivery_failure_separately(self) -> None:
-        with patch("backend.routes.auth.send_otp_email", return_value=False):
+        with (
+            patch("backend.routes.auth.send_otp_email", return_value=False),
+            patch(
+                "backend.routes.auth.settings",
+                replace(backend_settings, environment="production"),
+            ),
+        ):
             response = self.client.post(
                 "/auth/login",
                 json={
@@ -172,6 +188,10 @@ class ExamSessionEligibilityTests(unittest.TestCase):
     def test_production_login_explains_resend_test_sender_restriction(self) -> None:
         with (
             patch("backend.routes.auth.send_otp_email", return_value=False),
+            patch(
+                "backend.routes.auth.settings",
+                replace(backend_settings, environment="production"),
+            ),
             patch(
                 "backend.routes.auth.email_delivery_status",
                 return_value={
