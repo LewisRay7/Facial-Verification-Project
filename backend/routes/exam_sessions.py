@@ -460,6 +460,104 @@ def remove_eligible_student(
     return {"ok": True, "message": "Student removed from exam session"}
 
 
+@router.post("/{session_id}/eligible-students/{student_id}/reset-attendance")
+def reset_eligible_student_attendance(
+    session_id: int,
+    student_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    _session_or_404(db, session_id)
+    row = db.query(ExamSessionStudent).filter(
+        ExamSessionStudent.exam_session_id == session_id,
+        ExamSessionStudent.student_id == student_id,
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Eligible student link not found")
+    reset_at = datetime.utcnow()
+    was_verified = row.attendance_status == "verified" or row.verified_at is not None
+    row.attendance_status = "not_verified"
+    row.verified_at = None
+    row.verified_by = None
+    row.verified_device_id = None
+    row.updated_at = reset_at
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="EXAM_ATTENDANCE_RESET",
+        target=f"{session_id}:{student_id}",
+    )
+    db.commit()
+    db.refresh(row)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "student_id": student_id,
+        "reset_count": 1 if was_verified else 0,
+        "remaining_verified": 0,
+        "reset_at": reset_at.isoformat(),
+        "eligible_student": _eligibility_dict(row),
+        "message": (
+            "Attendance successfully reset for this student in the selected exam session."
+            if was_verified
+            else "Attendance was already clear for this student in the selected exam session."
+        ),
+    }
+
+
+@router.post("/{session_id}/reset-attendance")
+def reset_exam_session_attendance(
+    session_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, Depends(require_roles("Super Admin", "Admin"))],
+) -> dict:
+    _session_or_404(db, session_id)
+    reset_at = datetime.utcnow()
+    reset_count = db.query(ExamSessionStudent).filter(
+        ExamSessionStudent.exam_session_id == session_id,
+        (
+            (ExamSessionStudent.attendance_status == "verified")
+            | (ExamSessionStudent.verified_at.is_not(None))
+        ),
+    ).count()
+    db.query(ExamSessionStudent).filter(
+        ExamSessionStudent.exam_session_id == session_id
+    ).update(
+        {
+            ExamSessionStudent.attendance_status: "not_verified",
+            ExamSessionStudent.verified_at: None,
+            ExamSessionStudent.verified_by: None,
+            ExamSessionStudent.verified_device_id: None,
+            ExamSessionStudent.updated_at: reset_at,
+        },
+        synchronize_session=False,
+    )
+    log_event(
+        db,
+        actor_username=actor.username,
+        action="EXAM_SESSION_ATTENDANCE_RESET",
+        target=str(session_id),
+        metadata={"reset_count": reset_count},
+    )
+    db.commit()
+    remaining_verified = db.query(ExamSessionStudent).filter(
+        ExamSessionStudent.exam_session_id == session_id,
+        ExamSessionStudent.attendance_status == "verified",
+    ).count()
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "reset_count": reset_count,
+        "remaining_verified": remaining_verified,
+        "reset_at": reset_at.isoformat(),
+        "message": (
+            f"Attendance successfully reset for {reset_count} student(s) in the selected exam session."
+            if reset_count
+            else "Attendance was already clear for every student in the selected exam session."
+        ),
+    }
+
+
 @router.post("/{session_id}/verify")
 def evaluate_exam_entry(
     session_id: int,
@@ -505,7 +603,7 @@ def evaluate_exam_entry(
         reason = "Student blocked from this exam session."
     elif eligibility.attendance_status == "verified" and not payload.admin_override:
         decision = "ALREADY_VERIFIED"
-        reason = _already_verified_reason(eligibility)
+        reason = _already_verified_reason(eligibility, session)
     elif payload.admin_override and actor.role not in {"Super Admin", "Admin"}:
         reason = "Only an Admin or Super Admin may override a previous verification."
     elif payload.admin_override and not payload.override_reason.strip():
@@ -539,7 +637,7 @@ def evaluate_exam_entry(
         else:
             db.refresh(eligibility)
             decision = "ALREADY_VERIFIED"
-            reason = _already_verified_reason(eligibility)
+            reason = _already_verified_reason(eligibility, session)
 
     if eligibility is not None and decision not in {"VERIFIED", "ALREADY_VERIFIED"}:
         eligibility.attendance_status = "denied"
@@ -725,11 +823,24 @@ def _assignment_dict(row: ExamSessionInvigilator) -> dict:
     }
 
 
-def _already_verified_reason(row: ExamSessionStudent) -> str:
+def _already_verified_reason(
+    row: ExamSessionStudent,
+    session: ExamSession | None = None,
+) -> str:
+    session_context = ""
+    if session is not None:
+        schedule = " ".join(
+            value for value in (session.exam_date, session.start_time) if value
+        )
+        session_context = (
+            f" for {session.course_code}"
+            f"{f' ({schedule})' if schedule else ''}"
+        )
     return (
-        f"Student was already verified at {row.verified_at} by "
+        f"Student was already verified{session_context} at {row.verified_at} by "
         f"{row.verified_by or 'another invigilator'} on "
-        f"{row.verified_device_id or 'another device'}."
+        f"{row.verified_device_id or 'another device'}. "
+        "Reset attendance for this exact exam session before retesting."
     )
 
 

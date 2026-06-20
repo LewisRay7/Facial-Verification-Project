@@ -120,6 +120,9 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["database"], "ready")
         self.assertTrue(result["data_encryption_configured"])
+        self.assertIn("email_arbitrary_recipient_ready", result)
+        self.assertIn("email_resend_test_sender", result)
+        self.assertIn("email_smtp_fallback_configured", result)
 
     def test_super_admin_can_reset_operator_password_and_clear_lockout(self) -> None:
         with SessionLocal() as db:
@@ -165,6 +168,29 @@ class ExamSessionEligibilityTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("password was accepted", response.json()["detail"])
+
+    def test_production_login_explains_resend_test_sender_restriction(self) -> None:
+        with (
+            patch("backend.routes.auth.send_otp_email", return_value=False),
+            patch(
+                "backend.routes.auth.email_delivery_status",
+                return_value={
+                    "resend_test_sender": True,
+                    "smtp_fallback_configured": False,
+                },
+            ),
+        ):
+            response = self.client.post(
+                "/auth/login",
+                json={
+                    "username": "invigilator_b",
+                    "password": "Verify@12345",
+                    "requested_role": "Invigilator",
+                },
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("verified domain", response.json()["detail"])
 
     def add(self, student_id: int, kind: str = "regular") -> None:
         response = self.client.post(
@@ -241,6 +267,113 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409)
         self.assertIn("audit trail", response.json()["detail"])
+
+    def test_admin_can_reset_attendance_for_one_student_in_one_session(self):
+        self.add(self.john_id)
+        self.assertEqual(self.verify(self.john_id)["decision"], "VERIFIED")
+
+        response = self.client.post(
+            f"/exam-sessions/{self.session_id}/eligible-students/{self.john_id}/reset-attendance",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        reset_result = response.json()
+        self.assertEqual(reset_result["session_id"], self.session_id)
+        self.assertEqual(reset_result["student_id"], self.john_id)
+        self.assertEqual(reset_result["remaining_verified"], 0)
+        self.assertIn("successfully reset", reset_result["message"])
+        eligibility = reset_result["eligible_student"]
+        self.assertEqual(eligibility["attendance_status"], "not_verified")
+        self.assertIsNone(eligibility["verified_at"])
+
+        second_try = self.verify(self.john_id)
+        self.assertEqual(second_try["decision"], "VERIFIED")
+
+    def test_admin_can_reset_attendance_for_whole_session(self):
+        self.add(self.john_id)
+        self.add(self.paul_id, "repeat")
+        self.assertEqual(self.verify(self.john_id)["decision"], "VERIFIED")
+        self.assertEqual(self.verify(self.paul_id)["decision"], "VERIFIED")
+
+        response = self.client.post(
+            f"/exam-sessions/{self.session_id}/reset-attendance",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reset_count"], 2)
+        self.assertEqual(response.json()["remaining_verified"], 0)
+        self.assertIn("successfully reset", response.json()["message"])
+
+        roster = self.client.get(
+            f"/exam-sessions/{self.session_id}/eligible-students",
+            headers=self.headers,
+        ).json()["eligible_students"]
+        for row in roster:
+            self.assertEqual(row["attendance_status"], "not_verified")
+            self.assertIsNone(row["verified_at"])
+
+    def test_same_student_can_verify_in_two_sessions_and_resets_stay_scoped(self):
+        self.add(self.john_id)
+        self.assertEqual(self.verify(self.john_id)["decision"], "VERIFIED")
+
+        afternoon = self.client.post(
+            "/exam-sessions",
+            headers=self.headers,
+            json={
+                "course_code": "DIT420",
+                "course_name": "Network Security",
+                "program": "DIT",
+                "level": "4",
+                "exam_date": "2026-06-10",
+                "start_time": "14:00",
+                "end_time": "17:00",
+                "venue": "Room 210",
+            },
+        ).json()["exam_session"]
+        self.client.post(
+            f"/exam-sessions/{afternoon['id']}/activate",
+            headers=self.headers,
+        )
+        self.client.post(
+            f"/exam-sessions/{afternoon['id']}/eligible-students",
+            headers=self.headers,
+            json={"student_id": self.john_id, "eligibility_type": "regular"},
+        )
+
+        afternoon_result = self.client.post(
+            f"/exam-sessions/{afternoon['id']}/verify",
+            headers=self.headers,
+            json={
+                "detected_student_id": self.john_id,
+                "match_score": 0.20,
+                "confidence_gap": 0.12,
+                "liveness_passed": True,
+                "identity_matched": True,
+                "device_type": "desktop",
+                "device_id": "desk-afternoon",
+            },
+        ).json()
+        self.assertEqual(afternoon_result["decision"], "VERIFIED")
+
+        reset = self.client.post(
+            f"/exam-sessions/{self.session_id}/reset-attendance",
+            headers=self.headers,
+        ).json()
+        self.assertEqual(reset["remaining_verified"], 0)
+
+        morning_roster = self.client.get(
+            f"/exam-sessions/{self.session_id}/eligible-students",
+            headers=self.headers,
+        ).json()["eligible_students"]
+        afternoon_roster = self.client.get(
+            f"/exam-sessions/{afternoon['id']}/eligible-students",
+            headers=self.headers,
+        ).json()["eligible_students"]
+        self.assertEqual(morning_roster[0]["attendance_status"], "not_verified")
+        self.assertEqual(afternoon_roster[0]["attendance_status"], "verified")
+
+        morning_retry = self.verify(self.john_id)
+        self.assertEqual(morning_retry["decision"], "VERIFIED")
 
     def test_csv_import_links_existing_faces_and_reports_issues(self):
         with SessionLocal() as db:

@@ -19,7 +19,7 @@ from backend.database import get_db
 from backend.logs.audit import log_event
 from backend.models.schemas import LoginRequest, OtpVerifyRequest, TokenResponse
 from backend.models.tables import AdminRequest, User
-from backend.otp.email import send_otp_email
+from backend.otp.email import email_delivery_status, send_otp_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -89,12 +89,21 @@ def login(payload: LoginRequest, db: Annotated[Session, Depends(get_db)]) -> dic
     log_event(db, actor_username=user.username, action="OTP_ISSUED", target=user.email, metadata={"sent": email_sent})
     db.commit()
     if not email_sent and settings.is_production:
+        delivery = email_delivery_status()
+        detail = (
+            "Your password was accepted, but the verification email could not "
+            "be delivered. Contact the system administrator."
+        )
+        if delivery["resend_test_sender"] and not delivery["smtp_fallback_configured"]:
+            detail = (
+                "Your password was accepted, but this deployment still uses "
+                "Resend's test sender, which cannot deliver OTP codes to other "
+                "approved users. Configure RESEND_FROM with a verified domain "
+                "or configure an email fallback."
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Your password was accepted, but the verification email could "
-                "not be delivered. Contact the system administrator."
-            ),
+            detail=detail,
         )
     response = {"ok": True, "message": "Verification code sent.", "email_sent": email_sent}
     if not email_sent and not settings.is_production:
