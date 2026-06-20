@@ -28,4 +28,74 @@ void main() {
     expect(find.text('Operations Dashboard'), findsOneWidget);
     expect(find.text('REGISTERED STUDENTS'), findsOneWidget);
   });
+
+  testWidgets('exam session selector tolerates duplicate and refreshed rows', (
+    WidgetTester tester,
+  ) async {
+    const sessionA = ExamSessionRecord(
+      id: 1,
+      courseCode: 'DIT410',
+      courseName: 'Management Information Systems',
+      program: 'DIT',
+      level: '4',
+      examDate: '2026-06-18',
+      startTime: '09:00',
+      endTime: '12:00',
+      venue: 'Room 116',
+      status: 'active',
+    );
+    const duplicateSessionA = ExamSessionRecord(
+      id: 1,
+      courseCode: 'DIT410',
+      courseName: 'Management Information Systems',
+      program: 'DIT',
+      level: '4',
+      examDate: '2026-06-18',
+      startTime: '09:00',
+      endTime: '12:00',
+      venue: 'Room 116',
+      status: 'active',
+    );
+    const sessionB = ExamSessionRecord(
+      id: 2,
+      courseCode: 'DIT420',
+      courseName: 'Network Security',
+      program: 'DIT',
+      level: '4',
+      examDate: '2026-06-19',
+      startTime: '09:00',
+      endTime: '12:00',
+      venue: 'Room 210',
+      status: 'active',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ExamSessionSelector(
+            sessions: const [sessionA, duplicateSessionA],
+            selectedId: sessionA.id,
+            onChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.text(sessionA.label), findsOneWidget);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ExamSessionSelector(
+            sessions: const [sessionB],
+            selectedId: sessionB.id,
+            onChanged: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text(sessionB.label), findsOneWidget);
+  });
 }

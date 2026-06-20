@@ -1394,6 +1394,56 @@ def remove_exam_session_student(session_id: int, student_id: int) -> None:
         connection.commit()
 
 
+def reset_exam_session_student_attendance(session_id: int, student_id: int) -> None:
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            UPDATE exam_session_students
+            SET attendance_status = 'not_verified',
+                verified_at = NULL,
+                verified_by = NULL,
+                verified_device_id = NULL,
+                updated_at = ?
+            WHERE exam_session_id = ? AND student_id = ?
+            """,
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                session_id,
+                student_id,
+            ),
+        )
+        connection.commit()
+
+
+def reset_exam_session_attendance(session_id: int) -> int:
+    with closing(get_connection()) as connection:
+        reset_count = connection.execute(
+            """
+            SELECT COUNT(*) FROM exam_session_students
+            WHERE exam_session_id = ?
+              AND (attendance_status = 'verified' OR verified_at IS NOT NULL)
+            """,
+            (session_id,),
+        ).fetchone()[0]
+        connection.execute(
+            """
+            UPDATE exam_session_students
+            SET attendance_status = 'not_verified',
+                verified_at = NULL,
+                verified_by = NULL,
+                verified_device_id = NULL,
+                updated_at = ?
+            WHERE exam_session_id = ?
+            """,
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                session_id,
+            ),
+        )
+        connection.commit()
+        return int(reset_count)
+
+
 def evaluate_local_exam_entry(
     session_id: int | None,
     student_id: int | None,

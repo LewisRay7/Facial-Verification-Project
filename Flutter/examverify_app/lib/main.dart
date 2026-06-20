@@ -28,6 +28,20 @@ extension _FirstOrNull<T> on Iterable<T> {
   }
 }
 
+String _studentSelectionKey(StudentRecord student) =>
+    student.studentNumberHash ??
+    AuthService.hashIdentifier(student.studentNumber);
+
+List<ExamSessionRecord> _dedupeExamSessions(
+  Iterable<ExamSessionRecord> sessions,
+) {
+  final byId = <int, ExamSessionRecord>{};
+  for (final session in sessions) {
+    byId[session.id] = session;
+  }
+  return byId.values.toList();
+}
+
 void main() {
   runApp(const ExamVerifyApp());
 }
@@ -1013,6 +1027,11 @@ class _LoginPageState extends State<LoginPage>
     if (lower.contains('verification email') ||
         lower.contains('could not be delivered') ||
         lower.contains('mail settings')) {
+      if (lower.contains('resend') ||
+          lower.contains('verified domain') ||
+          lower.contains('email fallback')) {
+        return message;
+      }
       return 'Your password was accepted, but the OTP email could not be delivered. Contact the Super Admin.';
     }
     if (lower.contains('password')) {
@@ -3126,10 +3145,23 @@ class _VerifyPageState extends State<VerifyPage> {
 
   @override
   Widget build(BuildContext context) {
-    selectedStudent ??= widget.students.isEmpty ? null : widget.students.first;
-    selectedSession ??= widget.examSessions
-        .where((row) => row.isActive)
-        .firstOrNull;
+    final activeSessions = _dedupeExamSessions(
+      widget.examSessions.where((row) => row.isActive),
+    );
+    selectedStudent = selectedStudent == null
+        ? widget.students.firstOrNull
+        : widget.students.firstWhereOrNull(
+                (student) =>
+                    _studentSelectionKey(student) ==
+                    _studentSelectionKey(selectedStudent!),
+              ) ??
+              widget.students.firstOrNull;
+    selectedSession = selectedSession == null
+        ? activeSessions.firstOrNull
+        : activeSessions.firstWhereOrNull(
+                (session) => session.id == selectedSession!.id,
+              ) ??
+              activeSessions.firstOrNull;
 
     return AppScrollView(
       child: Column(
@@ -3148,7 +3180,7 @@ class _VerifyPageState extends State<VerifyPage> {
           ),
           if (widget.students.isEmpty)
             const EmptyState(message: 'Register a student before verification.')
-          else if (widget.examSessions.where((row) => row.isActive).isEmpty)
+          else if (activeSessions.isEmpty)
             const EmptyState(
               message: 'Activate an exam session before verifying exam entry.',
             )
@@ -3157,13 +3189,14 @@ class _VerifyPageState extends State<VerifyPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _ExamSessionSelector(
-                    sessions: widget.examSessions
-                        .where((row) => row.isActive)
-                        .toList(),
-                    selected: selectedSession,
-                    onChanged: (value) =>
-                        setState(() => selectedSession = value),
+                  ExamSessionSelector(
+                    sessions: activeSessions,
+                    selectedId: selectedSession?.id,
+                    onChanged: (value) => setState(
+                      () => selectedSession = activeSessions.firstWhereOrNull(
+                        (session) => session.id == value,
+                      ),
+                    ),
                   ),
                   if (widget.onlineClient == null) ...[
                     const SizedBox(height: 10),
@@ -3180,8 +3213,10 @@ class _VerifyPageState extends State<VerifyPage> {
                     ),
                   ],
                   const SizedBox(height: 16),
-                  DropdownButtonFormField<StudentRecord>(
-                    initialValue: selectedStudent,
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedStudent == null
+                        ? null
+                        : _studentSelectionKey(selectedStudent!),
                     isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Select student',
@@ -3189,7 +3224,7 @@ class _VerifyPageState extends State<VerifyPage> {
                     items: [
                       for (final student in widget.students)
                         DropdownMenuItem(
-                          value: student,
+                          value: _studentSelectionKey(student),
                           child: Text(
                             '${student.studentNumber} - ${student.fullName}',
                             maxLines: 1,
@@ -3197,8 +3232,11 @@ class _VerifyPageState extends State<VerifyPage> {
                           ),
                         ),
                     ],
-                    onChanged: (value) =>
-                        setState(() => selectedStudent = value),
+                    onChanged: (value) => setState(
+                      () => selectedStudent = widget.students.firstWhereOrNull(
+                        (student) => _studentSelectionKey(student) == value,
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   if (selectedStudent != null)
@@ -3409,7 +3447,8 @@ class _VerifyPageState extends State<VerifyPage> {
             : eligibility == null
             ? 'Access denied: ${student.fullName} is registered but not eligible for ${session.courseCode}.'
             : eligibility.attendanceStatus == 'verified'
-            ? 'Already verified for ${session.courseCode}.'
+            ? 'Already verified for ${session.courseCode} (${session.examDate} ${session.startTime}). '
+                  'Reset attendance for this exact session before retesting.'
             : 'Not verified. The biometric score or eligibility check failed.';
       });
       await ExamVerifyFeedback.playVerificationTone(finalStatus);
@@ -3471,9 +3510,15 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
 
   @override
   Widget build(BuildContext context) {
-    selectedSession ??= widget.examSessions
-        .where((row) => row.isActive)
-        .firstOrNull;
+    final activeSessions = _dedupeExamSessions(
+      widget.examSessions.where((row) => row.isActive),
+    );
+    selectedSession = selectedSession == null
+        ? activeSessions.firstOrNull
+        : activeSessions.firstWhereOrNull(
+                (session) => session.id == selectedSession!.id,
+              ) ??
+              activeSessions.firstOrNull;
     return AppScrollView(
       maxWidth: desktopCameraAvailable ? 1800 : 1380,
       child: Column(
@@ -3491,7 +3536,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           ),
           if (widget.students.isEmpty)
             const EmptyState(message: 'No student records available.')
-          else if (widget.examSessions.where((row) => row.isActive).isEmpty)
+          else if (activeSessions.isEmpty)
             const EmptyState(
               message: 'Activate an exam session before auto-identify starts.',
             )
@@ -3500,13 +3545,14 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _ExamSessionSelector(
-                    sessions: widget.examSessions
-                        .where((row) => row.isActive)
-                        .toList(),
-                    selected: selectedSession,
-                    onChanged: (value) =>
-                        setState(() => selectedSession = value),
+                  ExamSessionSelector(
+                    sessions: activeSessions,
+                    selectedId: selectedSession?.id,
+                    onChanged: (value) => setState(
+                      () => selectedSession = activeSessions.firstWhereOrNull(
+                        (session) => session.id == value,
+                      ),
+                    ),
                   ),
                   if (widget.onlineClient == null) ...[
                     const SizedBox(height: 10),
@@ -3761,7 +3807,9 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           : bestStudent != null && eligibility == null
           ? 'Access denied: $matchedName is registered but not eligible for ${session.courseCode}.'
           : bestStudent != null && eligibility?.attendanceStatus == 'verified'
-          ? 'Already verified: $matchedName was already verified for ${session.courseCode}.'
+          ? 'Already verified: $matchedName was already verified for '
+                '${session.courseCode} (${session.examDate} ${session.startTime}). '
+                'Reset attendance for this exact session before retesting.'
           : 'Unauthorized: no trusted student profile matched this scan.';
       if (mounted) {
         setState(() {
@@ -5616,27 +5664,36 @@ class NavButton extends StatelessWidget {
   }
 }
 
-class _ExamSessionSelector extends StatelessWidget {
-  const _ExamSessionSelector({
+class ExamSessionSelector extends StatelessWidget {
+  const ExamSessionSelector({
     required this.sessions,
-    required this.selected,
+    required this.selectedId,
     required this.onChanged,
+    super.key,
   });
 
   final List<ExamSessionRecord> sessions;
-  final ExamSessionRecord? selected;
-  final ValueChanged<ExamSessionRecord?> onChanged;
+  final int? selectedId;
+  final ValueChanged<int?> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    return DropdownButtonFormField<ExamSessionRecord>(
-      initialValue: selected,
+    final uniqueSessions = _dedupeExamSessions(sessions);
+    final sessionIds = uniqueSessions.map((session) => session.id).toSet();
+    final safeSelectedId = selectedId != null && sessionIds.contains(selectedId)
+        ? selectedId
+        : null;
+    return DropdownButtonFormField<int>(
+      key: ValueKey(
+        'exam-session-${safeSelectedId ?? 'none'}-${sessionIds.join('-')}',
+      ),
+      initialValue: safeSelectedId,
       isExpanded: true,
       decoration: const InputDecoration(labelText: 'Active exam session'),
       items: [
-        for (final session in sessions)
+        for (final session in uniqueSessions)
           DropdownMenuItem(
-            value: session,
+            value: session.id,
             child: Text(
               session.label,
               maxLines: 1,
@@ -5867,6 +5924,10 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                             child: const Text('View roster'),
                           ),
                           OutlinedButton(
+                            onPressed: () => _resetSessionAttendance(session),
+                            child: const Text('Reset attendance'),
+                          ),
+                          OutlinedButton(
                             onPressed: () => _assignInvigilator(session),
                             child: const Text('Assign invigilator'),
                           ),
@@ -5980,6 +6041,9 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
             return a.fullName.compareTo(b.fullName);
           });
     StudentRecord? student = candidates.firstOrNull;
+    var selectedStudentKey = student == null
+        ? null
+        : _studentSelectionKey(student);
     var eligibilityType = 'regular';
     var notes = '';
     final confirmed = await showDialog<bool>(
@@ -5992,19 +6056,24 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                DropdownButtonFormField<StudentRecord>(
-                  initialValue: student,
+                DropdownButtonFormField<String>(
+                  initialValue: selectedStudentKey,
                   decoration: const InputDecoration(labelText: 'Student'),
                   items: [
                     for (final row in candidates)
                       DropdownMenuItem(
-                        value: row,
+                        value: _studentSelectionKey(row),
                         child: Text(
                           '${row.studentNumber} - ${row.fullName} (${row.program} Level ${row.level})',
                         ),
                       ),
                   ],
-                  onChanged: (value) => setDialogState(() => student = value),
+                  onChanged: (value) => setDialogState(() {
+                    selectedStudentKey = value;
+                    student = candidates.firstWhereOrNull(
+                      (row) => _studentSelectionKey(row) == value,
+                    );
+                  }),
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -6204,6 +6273,36 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
                                   ),
                                 ),
                                 IconButton(
+                                  tooltip: 'Reset attendance',
+                                  onPressed: () async {
+                                    final result = await widget.client!
+                                        .resetExamEligibilityAttendance(
+                                          session.id,
+                                          eligibility.studentId,
+                                        );
+                                    if (context.mounted) Navigator.pop(context);
+                                    await widget.onChanged();
+                                    if (!mounted) return;
+                                    final studentName =
+                                        student?.fullName ?? 'Selected student';
+                                    final successMessage =
+                                        '${result.message} $studentName can now be verified again for ${session.courseCode}.';
+                                    setState(() => message = successMessage);
+                                    ScaffoldMessenger.of(this.context)
+                                      ..hideCurrentSnackBar()
+                                      ..showSnackBar(
+                                        SnackBar(
+                                          content: Text(successMessage),
+                                          backgroundColor: AppColors.green,
+                                        ),
+                                      );
+                                  },
+                                  icon: const Icon(
+                                    Icons.restart_alt,
+                                    color: AppColors.cyan,
+                                  ),
+                                ),
+                                IconButton(
                                   tooltip: 'Remove',
                                   onPressed: () async {
                                     await widget.client!.removeExamEligibility(
@@ -6236,6 +6335,64 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
     );
   }
 
+  Future<void> _resetSessionAttendance(ExamSessionRecord session) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset session attendance?'),
+        content: Text(
+          'This will clear the already-verified status for all students in ${session.courseCode}. '
+          'Use this for demonstration or controlled retesting.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reset attendance'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => busy = true);
+    try {
+      final result = await widget.client!.resetSessionAttendance(session.id);
+      await widget.onChanged();
+      if (mounted) {
+        final successMessage =
+            '${result.message} Verified remaining: ${result.remainingVerified}. '
+            'Students can now be verified again for ${session.courseCode}. '
+            'Keep the test student outside the camera frame until you are ready to begin.';
+        setState(() => message = successMessage);
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            icon: const Icon(
+              Icons.check_circle_outline,
+              color: AppColors.green,
+              size: 38,
+            ),
+            title: const Text('Attendance reset confirmed'),
+            content: Text(successMessage),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Done'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) setState(() => message = error.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> _assignInvigilator(ExamSessionRecord session) async {
     final users = await widget.client!.listUsers();
     final invigilators = users
@@ -6248,7 +6405,7 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
       );
       return;
     }
-    Map<String, dynamic>? selected = invigilators.first;
+    var selectedUsername = invigilators.first['username'] as String?;
     var role = 'support';
     final confirmed = await showDialog<bool>(
       context: context,
@@ -6260,19 +6417,20 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                DropdownButtonFormField<Map<String, dynamic>>(
-                  initialValue: selected,
+                DropdownButtonFormField<String>(
+                  initialValue: selectedUsername,
                   decoration: const InputDecoration(labelText: 'Invigilator'),
                   items: [
                     for (final user in invigilators)
                       DropdownMenuItem(
-                        value: user,
+                        value: user['username'] as String?,
                         child: Text(
                           '${user['full_name']} (${user['username']})',
                         ),
                       ),
                   ],
-                  onChanged: (value) => setDialogState(() => selected = value),
+                  onChanged: (value) =>
+                      setDialogState(() => selectedUsername = value),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -6301,10 +6459,14 @@ class _ExamSessionsPageState extends State<ExamSessionsPage> {
         ),
       ),
     );
-    if (confirmed != true || selected == null) return;
+    if (confirmed != true || selectedUsername == null) return;
+    final selected = invigilators.firstWhereOrNull(
+      (user) => user['username'] == selectedUsername,
+    );
+    if (selected == null) return;
     await widget.client!.assignInvigilator(
       session.id,
-      (selected!['id'] as num).toInt(),
+      (selected['id'] as num).toInt(),
       role,
     );
     setState(() => message = 'Invigilator assigned to ${session.courseCode}.');
@@ -9021,7 +9183,24 @@ class ExamSessionRecord {
   final String status;
 
   bool get isActive => status == 'active';
-  String get label => '$courseCode - $courseName ($venue)';
+  String get label {
+    final schedule = [
+      examDate,
+      if (startTime.isNotEmpty) startTime,
+    ].where((value) => value.isNotEmpty).join(' ');
+    return '$courseCode - $courseName ($venue)'
+        '${schedule.isEmpty ? '' : ' | $schedule'}';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ExamSessionRecord &&
+          runtimeType == other.runtimeType &&
+          id == other.id;
+
+  @override
+  int get hashCode => id.hashCode;
 
   Map<String, Object?> toMap() => {
     'id': id,
@@ -9093,6 +9272,34 @@ class ExamEligibilityRecord {
         attendanceStatus:
             (map['attendance_status'] as String?) ?? 'not_verified',
         verifiedAt: map['verified_at'] as String?,
+      );
+}
+
+class AttendanceResetResult {
+  const AttendanceResetResult({
+    required this.sessionId,
+    required this.resetCount,
+    required this.remainingVerified,
+    required this.message,
+    this.studentId,
+    this.resetAt,
+  });
+
+  final int sessionId;
+  final int? studentId;
+  final int resetCount;
+  final int remainingVerified;
+  final String message;
+  final String? resetAt;
+
+  static AttendanceResetResult fromMap(Map<String, dynamic> map) =>
+      AttendanceResetResult(
+        sessionId: (map['session_id'] as num).toInt(),
+        studentId: (map['student_id'] as num?)?.toInt(),
+        resetCount: (map['reset_count'] as num?)?.toInt() ?? 0,
+        remainingVerified: (map['remaining_verified'] as num?)?.toInt() ?? 0,
+        message: map['message'] as String? ?? 'Attendance successfully reset.',
+        resetAt: map['reset_at'] as String?,
       );
 }
 
@@ -10606,6 +10813,46 @@ class OnlineBackendClient {
 
   Future<void> removeExamEligibility(int sessionId, int studentId) async {
     await _deleteJson('/exam-sessions/$sessionId/eligible-students/$studentId');
+  }
+
+  Future<AttendanceResetResult> resetExamEligibilityAttendance(
+    int sessionId,
+    int studentId,
+  ) async {
+    final response = await _postJson(
+      '/exam-sessions/$sessionId/eligible-students/$studentId/reset-attendance',
+      {},
+    );
+    final result = AttendanceResetResult.fromMap(response);
+    final roster = await listExamEligibilities(sessionId);
+    final refreshed = roster.firstWhereOrNull(
+      (row) => row.studentId == studentId,
+    );
+    if (refreshed == null || refreshed.attendanceStatus == 'verified') {
+      throw FaceEngineException(
+        'The server did not confirm the attendance reset. Please retry before scanning.',
+      );
+    }
+    return result;
+  }
+
+  Future<AttendanceResetResult> resetSessionAttendance(int sessionId) async {
+    final response = await _postJson(
+      '/exam-sessions/$sessionId/reset-attendance',
+      {},
+    );
+    final result = AttendanceResetResult.fromMap(response);
+    final roster = await listExamEligibilities(sessionId);
+    final remainingVerified = roster
+        .where((row) => row.attendanceStatus == 'verified')
+        .length;
+    if (result.remainingVerified != 0 || remainingVerified != 0) {
+      throw FaceEngineException(
+        'The server did not clear every verified attendance record. '
+        'Please retry before scanning.',
+      );
+    }
+    return result;
   }
 
   Future<int> addMatchingExamCohort(int sessionId) async {

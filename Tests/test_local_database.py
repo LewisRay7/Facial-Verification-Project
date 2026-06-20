@@ -145,6 +145,113 @@ class LocalDatabaseStabilizationTests(unittest.TestCase):
         self.assertNotIn(session_id, [row["id"] for row in database.list_exam_sessions()])
         self.assertEqual(database.list_exam_session_students(session_id), [])
 
+    def test_reset_attendance_only_clears_selected_session_student(self) -> None:
+        photo = Path(self.temp_dir.name) / "student.jpg"
+        photo.write_bytes(b"test portrait")
+        student_id = database.add_student(
+            "2410476",
+            "Reset Demo",
+            "DIT",
+            photo,
+            face_embedding="[0.1, 0.2]",
+            embedding_backend="test",
+            level="4",
+        )
+        session_id = database.create_exam_session(
+            "DIT412",
+            "Reset Demo Session",
+            "DIT",
+            "4",
+            "2026-06-12",
+            "",
+            "",
+            "Room 118",
+            "admin",
+        )
+        database.add_exam_session_student(session_id, student_id)
+
+        first = database.evaluate_local_exam_entry(
+            session_id,
+            student_id,
+            liveness_passed=True,
+            identity_matched=True,
+        )
+        self.assertEqual(first["decision"], "VERIFIED")
+
+        second = database.evaluate_local_exam_entry(
+            session_id,
+            student_id,
+            liveness_passed=True,
+            identity_matched=True,
+        )
+        self.assertEqual(second["decision"], "ALREADY_VERIFIED")
+
+        database.reset_exam_session_student_attendance(session_id, student_id)
+
+        roster = database.list_exam_session_students(session_id)
+        self.assertEqual(roster[0]["attendance_status"], "not_verified")
+        self.assertIsNone(roster[0]["verified_at"])
+
+        third = database.evaluate_local_exam_entry(
+            session_id,
+            student_id,
+            liveness_passed=True,
+            identity_matched=True,
+        )
+        self.assertEqual(third["decision"], "VERIFIED")
+
+    def test_reset_attendance_for_whole_session(self) -> None:
+        photo = Path(self.temp_dir.name) / "student.jpg"
+        photo.write_bytes(b"test portrait")
+        first_student = database.add_student(
+            "2410477",
+            "Reset One",
+            "DIT",
+            photo,
+            face_embedding="[0.1, 0.2]",
+            embedding_backend="test",
+            level="4",
+        )
+        second_student = database.add_student(
+            "2410478",
+            "Reset Two",
+            "DIT",
+            photo,
+            face_embedding="[0.1, 0.2]",
+            embedding_backend="test",
+            level="4",
+        )
+        session_id = database.create_exam_session(
+            "DIT413",
+            "Reset Whole Session",
+            "DIT",
+            "4",
+            "2026-06-13",
+            "",
+            "",
+            "Room 119",
+            "admin",
+        )
+        database.add_exam_session_student(session_id, first_student)
+        database.add_exam_session_student(session_id, second_student)
+
+        self.assertEqual(
+            database.evaluate_local_exam_entry(session_id, first_student, True, True)["decision"],
+            "VERIFIED",
+        )
+        self.assertEqual(
+            database.evaluate_local_exam_entry(session_id, second_student, True, True)["decision"],
+            "VERIFIED",
+        )
+
+        reset_count = database.reset_exam_session_attendance(session_id)
+        self.assertEqual(reset_count, 2)
+
+        roster = database.list_exam_session_students(session_id)
+        for row in roster:
+            self.assertEqual(row["attendance_status"], "not_verified")
+            self.assertIsNone(row["verified_at"])
+
     def test_verification_log_and_integrity_check_do_not_crash(self) -> None:
         photo = Path(self.temp_dir.name) / "student.jpg"
         photo.write_bytes(b"test portrait")

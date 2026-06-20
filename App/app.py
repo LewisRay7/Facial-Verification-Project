@@ -44,6 +44,8 @@ from SRC.database import (
     log_audit_event,
     mask_student_identifier,
     remove_exam_session_student,
+    reset_exam_session_attendance,
+    reset_exam_session_student_attendance,
     search_students,
     set_student_active,
     set_exam_session_status,
@@ -1640,6 +1642,9 @@ def exam_sessions_page() -> None:
         "Exam Sessions",
         "Link already-enrolled students to the specific examination they are authorized to write.",
     )
+    reset_confirmation = st.session_state.pop("attendance_reset_confirmation", None)
+    if reset_confirmation:
+        st.success(reset_confirmation)
     with st.form("create_exam_session"):
         course_code = st.text_input("Course code")
         course_name = st.text_input("Course name")
@@ -1800,6 +1805,25 @@ def exam_sessions_page() -> None:
             st.subheader("Eligible Student Roster")
             st.dataframe(roster, use_container_width=True, hide_index=True)
             if roster:
+                if st.button("Reset all attendance for this session", key=f"reset_all_attendance_{session['id']}"):
+                    reset_count = reset_exam_session_attendance(session["id"])
+                    remaining_verified = [
+                        row
+                        for row in list_exam_session_students(session["id"])
+                        if row["attendance_status"] == "verified"
+                    ]
+                    if remaining_verified:
+                        st.error(
+                            "The attendance reset could not be confirmed. "
+                            "Do not begin scanning until the roster is clear."
+                        )
+                        return
+                    st.session_state["attendance_reset_confirmation"] = (
+                        f"Attendance successfully reset for {reset_count} student(s) "
+                        f"in {session['course_code']}. Verified remaining: 0. "
+                        "Students can now be verified again for this exam session."
+                    )
+                    st.rerun()
                 roster_student = st.selectbox(
                     "Roster action",
                     roster,
@@ -1810,10 +1834,34 @@ def exam_sessions_page() -> None:
                     ),
                     key=f"roster_action_{session['id']}",
                 )
-                block_col, remove_col = st.columns(2)
+                block_col, reset_col, remove_col = st.columns(3)
                 if block_col.button("Block selected", key=f"block_{session['id']}"):
                     set_exam_session_student_status(
                         session["id"], roster_student["student_id"], "blocked"
+                    )
+                    st.rerun()
+                if reset_col.button("Reset attendance", key=f"reset_attendance_{session['id']}"):
+                    reset_exam_session_student_attendance(
+                        session["id"], roster_student["student_id"]
+                    )
+                    refreshed = next(
+                        (
+                            row
+                            for row in list_exam_session_students(session["id"])
+                            if row["student_id"] == roster_student["student_id"]
+                        ),
+                        None,
+                    )
+                    if refreshed is None or refreshed["attendance_status"] == "verified":
+                        st.error(
+                            "The attendance reset could not be confirmed. "
+                            "Do not begin scanning until the roster is clear."
+                        )
+                        return
+                    st.session_state["attendance_reset_confirmation"] = (
+                        f"Attendance successfully reset for "
+                        f"{roster_student['full_name']} in {session['course_code']}. "
+                        "The student can now be verified again for this exam session."
                     )
                     st.rerun()
                 if remove_col.button("Remove selected", key=f"remove_{session['id']}"):
