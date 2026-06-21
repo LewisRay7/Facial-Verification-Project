@@ -23,6 +23,16 @@ foreach ($port in @(8000, 8765)) {
         Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
     }
 }
+$escapedTarget = [Regex]::Escape($target)
+Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+    Where-Object {
+        ($_.ExecutablePath -and $_.ExecutablePath -match $escapedTarget) -or
+        ($_.CommandLine -and $_.CommandLine -match $escapedTarget)
+    } |
+    ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+Start-Sleep -Seconds 2
 $desktopRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $env:USERPROFILE "Desktop")
 ).TrimEnd('\') + '\'
@@ -55,6 +65,15 @@ foreach ($folder in @("App", "SRC", "Assets", "Models")) {
         Copy-Item -LiteralPath $folderSource -Destination $faceBackend -Recurse -Force
     }
 }
+$modelSource = Join-Path $source "data\flutter_assets\assets\models\mobilefacenet.tflite"
+$modelTargetDirectory = Join-Path $faceBackend "models"
+if (-not (Test-Path -LiteralPath $modelSource)) {
+    throw "Bundled MobileFaceNet model not found: $modelSource"
+}
+New-Item -ItemType Directory -Force -Path $modelTargetDirectory | Out-Null
+Copy-Item -LiteralPath $modelSource -Destination (
+    Join-Path $modelTargetDirectory "mobilefacenet.tflite"
+) -Force
 
 if (Test-Path -LiteralPath $venvCache) {
     Move-Item -LiteralPath $venvCache -Destination (Join-Path $staging ".venv")

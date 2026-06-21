@@ -50,8 +50,14 @@ MOBILEFACENET_INPUT_SIZE = 112
 MOBILEFACENET_MODEL_PATHS = (
     ROOT_DIR / "Flutter" / "examverify_app" / "assets" / "models" / "mobilefacenet.tflite",
     ROOT_DIR / "data" / "flutter_assets" / "assets" / "models" / "mobilefacenet.tflite",
+    ROOT_DIR.parent / "data" / "flutter_assets" / "assets" / "models" / "mobilefacenet.tflite",
+    ROOT_DIR / "models" / "mobilefacenet.tflite",
 )
 _mobilefacenet_interpreter = None
+
+
+def _mobilefacenet_model_path() -> Path | None:
+    return next((path for path in MOBILEFACENET_MODEL_PATHS if path.is_file()), None)
 
 
 def require_token(fn):
@@ -69,7 +75,15 @@ def require_token(fn):
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "service": "ExamVerify Face Backend"})
+    model_path = _mobilefacenet_model_path()
+    return jsonify(
+        {
+            "ok": True,
+            "service": "ExamVerify Face Backend",
+            "mobilefacenet_model_available": model_path is not None,
+            "mobilefacenet_model_path": str(model_path) if model_path else None,
+        }
+    )
 
 
 @app.post("/auth/login")
@@ -434,9 +448,13 @@ def _crop_largest_face(image_path: Path) -> np.ndarray | None:
         minNeighbors=5,
         minSize=(70, 70),
     )
-    if len(faces) == 0:
-        return None
-    x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
+    if len(faces) > 0:
+        x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
+    else:
+        mesh_box = _mediapipe_face_box(image)
+        if mesh_box is None:
+            return None
+        x, y, width, height = mesh_box
     pad_x = int(width * 0.20)
     pad_y = int(height * 0.22)
     left = max(0, x - pad_x)
@@ -444,6 +462,40 @@ def _crop_largest_face(image_path: Path) -> np.ndarray | None:
     right = min(image.shape[1], x + width + pad_x)
     bottom = min(image.shape[0], y + height + pad_y)
     return image[top:bottom, left:right]
+
+
+def _mediapipe_face_box(image: np.ndarray) -> tuple[int, int, int, int] | None:
+    try:
+        import mediapipe as mp
+
+        with mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=False,
+            min_detection_confidence=0.35,
+        ) as face_mesh:
+            result = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        if not result.multi_face_landmarks:
+            return None
+        frame_height, frame_width = image.shape[:2]
+        points = result.multi_face_landmarks[0].landmark
+        left = max(0, int(min(point.x for point in points) * frame_width))
+        top = max(0, int(min(point.y for point in points) * frame_height))
+        right = min(
+            frame_width,
+            int(max(point.x for point in points) * frame_width),
+        )
+        bottom = min(
+            frame_height,
+            int(max(point.y for point in points) * frame_height),
+        )
+        width = right - left
+        height = bottom - top
+        if width < 40 or height < 40:
+            return None
+        return left, top, width, height
+    except Exception:
+        return None
 
 
 def _balance_low_light(cropped_face: np.ndarray) -> np.ndarray:
@@ -472,7 +524,7 @@ def _balance_low_light(cropped_face: np.ndarray) -> np.ndarray:
 def _generate_mobilefacenet_signature(cropped_face: np.ndarray) -> list[float]:
     global _mobilefacenet_interpreter
     if _mobilefacenet_interpreter is None:
-        model_path = next((path for path in MOBILEFACENET_MODEL_PATHS if path.exists()), None)
+        model_path = _mobilefacenet_model_path()
         if model_path is None:
             raise FaceMatchError("The bundled MobileFaceNet model is unavailable.")
         import tensorflow as tf

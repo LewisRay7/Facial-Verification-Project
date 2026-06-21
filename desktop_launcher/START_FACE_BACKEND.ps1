@@ -11,7 +11,10 @@ $healthUrl = "http://127.0.0.1:8765/health"
 function Test-FaceBackend {
     try {
         $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 2
-        return $response.ok -eq $true
+        return (
+            $response.ok -eq $true -and
+            $response.mobilefacenet_model_available -eq $true
+        )
     } catch {
         return $false
     }
@@ -44,4 +47,4 @@ for ($attempt = 0; $attempt -lt 60; $attempt++) {
     }
 }
 
-throw "The face backend did not become healthy. Check face-backend.err."
+throw "The face backend or bundled MobileFaceNet model did not become healthy. Check face-backend.err."
