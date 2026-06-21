@@ -4394,8 +4394,15 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
         stableFrames = 0;
         livenessFrames = 0;
         setState(() {
-          phase = _KioskScanPhase.idle;
-          message = nextSignal.faceCount != 1
+          final backendUnavailable = nextSignal.message.toLowerCase().contains(
+            'face engine is not available',
+          );
+          phase = backendUnavailable
+              ? _KioskScanPhase.error
+              : _KioskScanPhase.idle;
+          message = backendUnavailable
+              ? 'Desktop face engine is unavailable. Restart the desktop launcher.'
+              : nextSignal.faceCount != 1
               ? 'Idle. Waiting for one student to step into frame.'
               : nextSignal.quality < 0.24
               ? 'Poor lighting detected. Move to better lighting and face the light source.'
@@ -11860,23 +11867,44 @@ class PythonFaceBackend {
   }
 
   static Future<void> _start() async {
-    if (_process != null) return;
+    if (_process != null) {
+      if (await _health()) return;
+      _process = null;
+    }
     final root = _findProjectRoot();
     if (root == null) return;
     final python = File(
       '${root.path}${Platform.pathSeparator}.venv${Platform.pathSeparator}Scripts${Platform.pathSeparator}python.exe',
     );
-    final api = File(
+    final directApi = File(
       '${root.path}${Platform.pathSeparator}App${Platform.pathSeparator}backend_api.py',
     );
+    final deployedApi = File(
+      '${root.path}${Platform.pathSeparator}face_backend${Platform.pathSeparator}App${Platform.pathSeparator}backend_api.py',
+    );
+    final api = directApi.existsSync() ? directApi : deployedApi;
     if (!python.existsSync() || !api.existsSync()) return;
     _process = await Process.start(python.path, [
       api.path,
+      '--host',
+      '127.0.0.1',
       '--port',
       '$_port',
-    ], workingDirectory: root.path);
-    _process!.stdout.listen((_) {});
-    _process!.stderr.listen((_) {});
+    ], workingDirectory: api.parent.parent.path);
+    final startedProcess = _process!;
+    startedProcess.stdout
+        .transform(utf8.decoder)
+        .listen((line) => debugPrint('ExamVerify face backend: $line'));
+    startedProcess.stderr
+        .transform(utf8.decoder)
+        .listen((line) => debugPrint('ExamVerify face backend error: $line'));
+    unawaited(
+      startedProcess.exitCode.then((_) {
+        if (identical(_process, startedProcess)) {
+          _process = null;
+        }
+      }),
+    );
   }
 
   static Directory? _findProjectRoot() {
@@ -11893,7 +11921,13 @@ class PythonFaceBackend {
         final python = File(
           '${current.path}${Platform.pathSeparator}.venv${Platform.pathSeparator}Scripts${Platform.pathSeparator}python.exe',
         );
-        if (api.existsSync() && python.existsSync()) return current;
+        final deployedApi = File(
+          '${current.path}${Platform.pathSeparator}face_backend${Platform.pathSeparator}App${Platform.pathSeparator}backend_api.py',
+        );
+        if ((api.existsSync() || deployedApi.existsSync()) &&
+            python.existsSync()) {
+          return current;
+        }
         final parent = current.parent;
         if (parent.path == current.path) break;
         current = parent;
