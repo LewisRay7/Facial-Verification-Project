@@ -100,7 +100,7 @@ def _ensure_exam_session_columns() -> None:
             "VARCHAR(80) NOT NULL DEFAULT ''"
         ),
         "enrollment_reviewed_at": (
-            "ALTER TABLE students ADD COLUMN enrollment_reviewed_at DATETIME"
+            "ALTER TABLE students ADD COLUMN enrollment_reviewed_at TIMESTAMP"
         ),
         "biometric_profile_version": (
             "ALTER TABLE students ADD COLUMN biometric_profile_version "
