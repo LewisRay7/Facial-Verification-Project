@@ -614,7 +614,99 @@ class ExamSessionEligibilityTests(unittest.TestCase):
     def test_ambiguous_identity_denied(self):
         self.add(self.john_id)
         result = self.verify(self.john_id, confidence_gap=0.01)
-        self.assertIn("ambiguous", result["reason"])
+        self.assertEqual(result["decision"], "STEP_UP_REQUIRED")
+        self.assertTrue(result["step_up_required"])
+
+    def test_ambiguous_identity_accepts_matching_student_id_step_up(self):
+        self.add(self.john_id)
+        result = self.verify(
+            self.john_id,
+            confidence_gap=0.01,
+            step_up_verified=True,
+            step_up_method="student_id",
+            asserted_student_number_hash=hash_student_identifier("240001"),
+        )
+        self.assertEqual(result["decision"], "VERIFIED")
+
+    def test_ambiguous_identity_rejects_wrong_student_id_step_up(self):
+        self.add(self.john_id)
+        result = self.verify(
+            self.john_id,
+            confidence_gap=0.01,
+            step_up_verified=True,
+            step_up_method="student_id",
+            asserted_student_number_hash=hash_student_identifier("999999"),
+        )
+        self.assertEqual(result["decision"], "STEP_UP_REQUIRED")
+
+    def test_new_cloud_enrollment_requires_review_confirmation(self):
+        payload = {
+            "student_number_hash": hash_student_identifier("240099"),
+            "student_number_mask": "24***99",
+            "full_name": "Enrollment Review",
+            "program": "DIT",
+            "level": "4",
+            "photo_url": "data:image/jpeg;base64,dGVzdA==",
+            "biometric_profile": {"signature": [0.4] * 192},
+        }
+        response = self.client.post(
+            "/students/sync", headers=self.headers, json=payload
+        )
+        self.assertEqual(response.status_code, 400)
+        payload["review_confirmed"] = True
+        response = self.client.post(
+            "/students/sync", headers=self.headers, json=payload
+        )
+        self.assertEqual(response.status_code, 200)
+        student = response.json()["student"]
+        self.assertEqual(student["enrollment_status"], "approved")
+        self.assertEqual(student["biometric_profile_version"], 1)
+        self.assertEqual(len(student["biometric_profile"]["embeddings"]), 1)
+
+    def test_biometric_replacement_requires_reason_and_preserves_samples(self):
+        student_hash = hash_student_identifier("240098")
+        base = {
+            "student_number_hash": student_hash,
+            "student_number_mask": "24***98",
+            "full_name": "Appearance Change",
+            "program": "DIT",
+            "level": "4",
+            "photo_url": "data:image/jpeg;base64,b2xk",
+            "biometric_profile": {"signature": [0.2] * 192},
+            "review_confirmed": True,
+        }
+        self.assertEqual(
+            self.client.post(
+                "/students/sync", headers=self.headers, json=base
+            ).status_code,
+            200,
+        )
+        replacement = {
+            **base,
+            "photo_url": "data:image/jpeg;base64,bmV3",
+            "biometric_profile": {"signature": [0.7] * 192},
+        }
+        blocked = self.client.post(
+            "/students/sync", headers=self.headers, json=replacement
+        )
+        self.assertEqual(blocked.status_code, 409)
+        replacement.update(
+            {
+                "replace_biometric_profile": True,
+                "replacement_reason": "Appearance changed after enrollment.",
+            }
+        )
+        accepted = self.client.post(
+            "/students/sync", headers=self.headers, json=replacement
+        )
+        self.assertEqual(accepted.status_code, 200)
+        student = accepted.json()["student"]
+        self.assertEqual(student["biometric_profile_version"], 2)
+        self.assertEqual(len(student["biometric_profile"]["embeddings"]), 2)
+        self.assertEqual(
+            student["biometric_profile"]["replacement_history"][-1]["reason"],
+            "Appearance changed after enrollment.",
+        )
 
 
 if __name__ == "__main__":

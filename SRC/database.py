@@ -61,7 +61,46 @@ def _student_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
     record["photo_path"] = _resolve_moved_project_path(record.get("photo_path"))
     record["level"] = record.get("level") or ""
     record["student_status"] = record.get("student_status") or "active"
+    record["enrollment_status"] = record.get("enrollment_status") or "approved"
+    record["biometric_profile_version"] = int(
+        record.get("biometric_profile_version") or 1
+    )
     return record
+
+
+def _decode_embedding_samples(value: str | None) -> list[list[float]]:
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    if isinstance(decoded, list) and decoded and all(
+        isinstance(item, (int, float)) for item in decoded
+    ):
+        return [[float(item) for item in decoded]]
+    if isinstance(decoded, list):
+        return [
+            [float(item) for item in sample]
+            for sample in decoded
+            if isinstance(sample, list)
+            and sample
+            and all(isinstance(item, (int, float)) for item in sample)
+        ]
+    return []
+
+
+def _merge_embedding_samples(
+    primary: str | None, previous: str | None = None
+) -> str | None:
+    samples: list[list[float]] = []
+    for sample in [
+        *_decode_embedding_samples(primary),
+        *_decode_embedding_samples(previous),
+    ]:
+        if sample not in samples:
+            samples.append(sample)
+    return json.dumps(samples[:5]) if samples else primary
 
 
 def init_db() -> None:
@@ -217,6 +256,11 @@ def _ensure_student_columns(connection: sqlite3.Connection) -> None:
         "student_number_hash": "ALTER TABLE students ADD COLUMN student_number_hash TEXT",
         "level": "ALTER TABLE students ADD COLUMN level TEXT",
         "student_status": "ALTER TABLE students ADD COLUMN student_status TEXT NOT NULL DEFAULT 'active'",
+        "enrollment_status": "ALTER TABLE students ADD COLUMN enrollment_status TEXT NOT NULL DEFAULT 'approved'",
+        "enrollment_reviewed_by": "ALTER TABLE students ADD COLUMN enrollment_reviewed_by TEXT",
+        "enrollment_reviewed_at": "ALTER TABLE students ADD COLUMN enrollment_reviewed_at TEXT",
+        "biometric_profile_version": "ALTER TABLE students ADD COLUMN biometric_profile_version INTEGER NOT NULL DEFAULT 1",
+        "biometric_replacement_history": "ALTER TABLE students ADD COLUMN biometric_replacement_history TEXT NOT NULL DEFAULT '[]'",
     }
     for column_name, statement in migrations.items():
         if column_name not in existing_columns:
@@ -678,16 +722,20 @@ def add_student(
     exam_eligible: bool = True,
     eligibility_note: str = "",
     level: str = "",
+    enrollment_reviewed_by: str = "System Administrator",
 ) -> int:
+    reviewed_at = datetime.now().isoformat(timespec="seconds")
     with closing(get_connection()) as connection:
         cursor = connection.execute(
             """
             INSERT INTO students (
                 student_number, full_name, program, level, photo_path,
                 student_number_hash, face_embedding, embedding_backend, exam_eligible,
-                eligibility_note, created_at
+                eligibility_note, enrollment_status, enrollment_reviewed_by,
+                enrollment_reviewed_at, biometric_profile_version,
+                biometric_replacement_history, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, 1, '[]', ?)
             """,
             (
                 student_number.strip(),
@@ -700,7 +748,9 @@ def add_student(
                 embedding_backend,
                 1 if exam_eligible else 0,
                 eligibility_note.strip(),
-                datetime.now().isoformat(timespec="seconds"),
+                enrollment_reviewed_by.strip(),
+                reviewed_at,
+                reviewed_at,
             ),
         )
         connection.commit()
@@ -720,18 +770,57 @@ def update_student_photo(
     photo_path: Path,
     face_embedding: str | None = None,
     embedding_backend: str | None = None,
+    reviewed_by: str = "System Administrator",
+    replacement_reason: str = "",
 ) -> None:
     with closing(get_connection()) as connection:
+        current = connection.execute(
+            """
+            SELECT face_embedding, photo_path, biometric_profile_version,
+                   biometric_replacement_history
+            FROM students WHERE id = ?
+            """,
+            (student_id,),
+        ).fetchone()
+        if current is None:
+            raise ValueError("Student record not found.")
+        replacing = bool(current["face_embedding"] and face_embedding)
+        if replacing and not replacement_reason.strip():
+            raise ValueError(
+                "Biometric replacement requires a reason and administrator review."
+            )
+        merged_embedding = _merge_embedding_samples(
+            face_embedding, current["face_embedding"] if replacing else None
+        )
+        version = int(current["biometric_profile_version"] or 1)
+        history = json.loads(current["biometric_replacement_history"] or "[]")
+        if replacing:
+            version += 1
+            history.append(
+                {
+                    "replaced_at": datetime.now().isoformat(timespec="seconds"),
+                    "replaced_by": reviewed_by,
+                    "reason": replacement_reason.strip(),
+                    "previous_photo_path": current["photo_path"],
+                }
+            )
         connection.execute(
             """
             UPDATE students
-            SET photo_path = ?, face_embedding = ?, embedding_backend = ?, updated_at = ?
+            SET photo_path = ?, face_embedding = ?, embedding_backend = ?,
+                enrollment_status = 'approved', enrollment_reviewed_by = ?,
+                enrollment_reviewed_at = ?, biometric_profile_version = ?,
+                biometric_replacement_history = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 str(photo_path),
-                face_embedding,
+                merged_embedding,
                 embedding_backend,
+                reviewed_by.strip(),
+                datetime.now().isoformat(timespec="seconds"),
+                version,
+                json.dumps(history[-10:], sort_keys=True),
                 datetime.now().isoformat(timespec="seconds"),
                 student_id,
             ),
@@ -739,7 +828,10 @@ def update_student_photo(
         connection.commit()
     log_audit_event(
         "STUDENT_PHOTO_UPDATED",
-        details=f"student_id={student_id}; embedding_backend={embedding_backend or 'none'}",
+        details=(
+            f"student_id={student_id}; embedding_backend={embedding_backend or 'none'}; "
+            f"replacement={replacing}; version={version}"
+        ),
     )
 
 
@@ -819,7 +911,9 @@ def list_students(active_only: bool = True) -> list[dict[str, Any]]:
                     id, student_number, student_number_hash, full_name, program, level, student_status,
                     photo_path, created_at,
                     active, face_embedding, embedding_backend,
-                    exam_eligible, eligibility_note
+                    exam_eligible, eligibility_note, enrollment_status,
+                    enrollment_reviewed_by, enrollment_reviewed_at,
+                    biometric_profile_version, biometric_replacement_history
                 FROM students
                 {active_filter}
                 ORDER BY full_name COLLATE NOCASE
@@ -838,7 +932,9 @@ def search_students(search_text: str = "", active_only: bool = True) -> list[dic
                     id, student_number, student_number_hash, full_name, program, level, student_status,
                     photo_path, created_at,
                     active, face_embedding, embedding_backend,
-                    exam_eligible, eligibility_note
+                    exam_eligible, eligibility_note, enrollment_status,
+                    enrollment_reviewed_by, enrollment_reviewed_at,
+                    biometric_profile_version, biometric_replacement_history
                 FROM students
                 WHERE (student_number LIKE ? OR full_name LIKE ? OR program LIKE ? OR level LIKE ?)
                 {active_filter}
@@ -857,7 +953,9 @@ def get_student(student_id: int) -> dict[str, Any] | None:
                 id, student_number, student_number_hash, full_name, program, level, student_status,
                 photo_path, created_at,
                 active, face_embedding, embedding_backend,
-                exam_eligible, eligibility_note
+                exam_eligible, eligibility_note, enrollment_status,
+                enrollment_reviewed_by, enrollment_reviewed_at,
+                biometric_profile_version, biometric_replacement_history
             FROM students
             WHERE id = ?
             """,
@@ -874,7 +972,9 @@ def get_student_by_number(student_number: str) -> dict[str, Any] | None:
                 id, student_number, student_number_hash, full_name, program, level, student_status,
                 photo_path, created_at,
                 active, face_embedding, embedding_backend,
-                exam_eligible, eligibility_note
+                exam_eligible, eligibility_note, enrollment_status,
+                enrollment_reviewed_by, enrollment_reviewed_at,
+                biometric_profile_version, biometric_replacement_history
             FROM students
             WHERE student_number = ?
             """,

@@ -57,6 +57,9 @@ class StudentSyncIn(BaseModel):
     status: Literal["active", "inactive", "suspended"] = "active"
     photo_url: str = ""
     biometric_profile: dict[str, Any] = Field(default_factory=dict)
+    review_confirmed: bool = False
+    replace_biometric_profile: bool = False
+    replacement_reason: str = Field(default="", max_length=500)
 
 
 class VerificationLogIn(BaseModel):
@@ -129,6 +132,9 @@ class ExamEntryEvaluateIn(BaseModel):
     device_name: str = ""
     admin_override: bool = False
     override_reason: str = ""
+    step_up_verified: bool = False
+    step_up_method: Literal["student_id", "admin_override", "otp"] | None = None
+    asserted_student_number_hash: str = ""
 
 
 class ApiMessage(BaseModel):

@@ -318,7 +318,7 @@ def _verify_with_stored_embedding(
         return None
 
     try:
-        reference_vector = np.array(json.loads(reference_embedding), dtype=np.float32)
+        decoded_reference = json.loads(reference_embedding)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
 
@@ -326,8 +326,27 @@ def _verify_with_stored_embedding(
     if live_embedding is None:
         return None
 
-    live_vector = np.array(live_embedding, dtype=np.float32)
-    distance = _cosine_distance(reference_vector, live_vector)
+    reference_samples = (
+        decoded_reference
+        if isinstance(decoded_reference, list)
+        and decoded_reference
+        and isinstance(decoded_reference[0], list)
+        else [decoded_reference]
+    )
+    live_vector = _l2_normalize(np.array(live_embedding, dtype=np.float32))
+    distances: list[float] = []
+    for sample in reference_samples:
+        try:
+            reference_vector = _l2_normalize(
+                np.array(sample, dtype=np.float32)
+            )
+        except (TypeError, ValueError):
+            continue
+        if reference_vector.shape == live_vector.shape:
+            distances.append(_cosine_distance(reference_vector, live_vector))
+    if not distances:
+        return None
+    distance = min(distances)
     is_match = distance <= facenet_threshold
     return MatchResult(
         is_match=is_match,
