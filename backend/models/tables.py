@@ -55,9 +55,7 @@ class Student(Base):
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     photo_url: Mapped[str] = mapped_column(Text, default="")
     biometric_profile_json: Mapped[str] = mapped_column(Text, default="{}")
-    enrollment_status: Mapped[str] = mapped_column(
-        String(30), default="approved", index=True
-    )
+    enrollment_status: Mapped[str] = mapped_column(String(30), default="approved")
     enrollment_reviewed_by: Mapped[str] = mapped_column(String(80), default="")
     enrollment_reviewed_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
