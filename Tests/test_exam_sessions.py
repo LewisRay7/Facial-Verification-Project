@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from backend.auth.security import create_access_token, hash_password, verify_password
 from backend.config import settings as backend_settings
 from backend.database import SessionLocal, engine
+from backend import database as cloud_database
 from backend.main import create_app
 from backend.models.tables import Student, User
 from backend.security.data_encryption import encrypt_json, hash_student_identifier
@@ -133,6 +134,11 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         self.assertIn("email_arbitrary_recipient_ready", result)
         self.assertIn("email_resend_test_sender", result)
         self.assertIn("email_smtp_fallback_configured", result)
+
+    def test_cloud_migrations_use_postgresql_compatible_timestamp_type(self) -> None:
+        source = Path(cloud_database.__file__).read_text(encoding="utf-8")
+        self.assertIn("enrollment_reviewed_at TIMESTAMP", source)
+        self.assertNotIn("enrollment_reviewed_at DATETIME", source)
 
     def test_super_admin_can_reset_operator_password_and_clear_lockout(self) -> None:
         with SessionLocal() as db:
