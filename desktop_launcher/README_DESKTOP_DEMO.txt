@@ -8,6 +8,10 @@ The desktop application uses the hosted Render/Neon backend as its
 authoritative source. The launcher starts only the local camera and FaceNet
 helper required for desktop biometric processing.
 
+If scanning remains at 0 faces / 0 percent quality:
+  Check face-backend.err. The launcher now waits for a healthy face service
+  before opening the desktop application.
+
 Local cache:
   The app keeps a temporary exam cache in the Windows application-support
   directory. Successful online synchronization replaces the local student
