@@ -5089,13 +5089,7 @@ class _StudentsPageState extends State<StudentsPage> {
         student.copyWith(
           photoPath: storedPhoto.path,
           signature: signature,
-          signatureSamples: [
-            signature,
-            ...student.signatureSamples.where((sample) => sample != signature),
-            if (student.signatureSamples.isEmpty &&
-                student.signature != signature)
-              student.signature,
-          ].take(5).toList(),
+          signatureSamples: [signature],
           reviewConfirmed: true,
           replaceBiometricProfile: true,
           replacementReason: reason,

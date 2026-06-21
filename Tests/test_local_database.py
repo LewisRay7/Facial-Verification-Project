@@ -66,7 +66,10 @@ class LocalDatabaseStabilizationTests(unittest.TestCase):
         student = database.get_student(student_id)
         self.assertEqual(student["level"], "5")
         self.assertEqual(student["biometric_profile_version"], 2)
-        self.assertEqual(len(database._decode_embedding_samples(student["face_embedding"])), 2)
+        self.assertEqual(
+            len(database._decode_embedding_samples(student["face_embedding"])),
+            1,
+        )
         self.assertEqual(database.get_student_by_number("2410470")["level"], "5")
         self.assertEqual(database.list_students(active_only=False)[0]["level"], "5")
         self.assertEqual(

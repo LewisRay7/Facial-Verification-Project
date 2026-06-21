@@ -789,9 +789,7 @@ def update_student_photo(
             raise ValueError(
                 "Biometric replacement requires a reason and administrator review."
             )
-        merged_embedding = _merge_embedding_samples(
-            face_embedding, current["face_embedding"] if replacing else None
-        )
+        merged_embedding = _merge_embedding_samples(face_embedding)
         version = int(current["biometric_profile_version"] or 1)
         history = json.loads(current["biometric_replacement_history"] or "[]")
         if replacing:
