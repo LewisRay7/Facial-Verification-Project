@@ -10187,7 +10187,19 @@ class ExamVerifyStore {
       databaseFactory = databaseFactoryFfi;
       _ffiReady = true;
     }
-    final dbDirectory = await getDatabasesPath();
+    final String dbDirectory;
+    if (Platform.isWindows) {
+      final supportDirectory = await getApplicationSupportDirectory();
+      final databaseDirectory = Directory(
+        '${supportDirectory.path}${Platform.pathSeparator}database',
+      );
+      if (!await databaseDirectory.exists()) {
+        await databaseDirectory.create(recursive: true);
+      }
+      dbDirectory = databaseDirectory.path;
+    } else {
+      dbDirectory = await getDatabasesPath();
+    }
     final dbPath = '$dbDirectory${Platform.pathSeparator}examverify_mobile.db';
     _database = await openDatabase(
       dbPath,
