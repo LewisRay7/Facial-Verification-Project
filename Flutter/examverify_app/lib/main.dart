@@ -3614,7 +3614,7 @@ class _VerifyPageState extends State<VerifyPage> {
           resultScore = liveness.score;
           resultMessage = 'Spoof detected: ${liveness.message}';
         });
-        await ExamVerifyFeedback.playVerificationTone(
+        await ExamVerifyFeedback.speakVerificationResult(
           VerificationStatus.spoofDetected,
         );
         return;
@@ -3731,11 +3731,14 @@ class _VerifyPageState extends State<VerifyPage> {
             ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${resolvedDecision.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.${resolvedDecision.otherSessionActivity ? ' Warning: student has verification activity in another session.' : ''}'
             : resolvedDecision.reason;
       });
-      await ExamVerifyFeedback.playVerificationTone(finalStatus);
+      await ExamVerifyFeedback.speakVerificationResult(
+        finalStatus,
+        verifiedStudentName: approved ? student.fullName : null,
+      );
     } catch (error) {
       if (!mounted) return;
       setState(() => resultMessage = error.toString());
-      await ExamVerifyFeedback.playVerificationTone(
+      await ExamVerifyFeedback.speakVerificationResult(
         VerificationStatus.notVerified,
       );
     } finally {
@@ -4001,7 +4004,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
             resultMessage = 'Spoof detected: ${liveness.message}';
           });
         }
-        await _playVerificationTone(VerificationStatus.spoofDetected);
+        await _speakVerificationResult(VerificationStatus.spoofDetected);
         return _AutoIdentifyOutcome(
           status: VerificationStatus.spoofDetected,
           score: liveness.score,
@@ -4141,12 +4144,17 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         score: bestScore,
         message: message,
       );
-      await _playVerificationTone(outcome.status);
+      await _speakVerificationResult(
+        outcome.status,
+        verifiedStudentName: outcome.status == VerificationStatus.verified
+            ? outcome.student?.fullName
+            : null,
+      );
       return outcome;
     } catch (error) {
       final message = error.toString();
       if (mounted) setState(() => resultMessage = message);
-      await _playVerificationTone(VerificationStatus.notVerified);
+      await _speakVerificationResult(VerificationStatus.notVerified);
       return _AutoIdentifyOutcome(
         status: VerificationStatus.notVerified,
         score: 1,
@@ -4157,8 +4165,14 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
     }
   }
 
-  Future<void> _playVerificationTone(VerificationStatus status) async {
-    await ExamVerifyFeedback.playVerificationTone(status);
+  Future<void> _speakVerificationResult(
+    VerificationStatus status, {
+    String? verifiedStudentName,
+  }) async {
+    await ExamVerifyFeedback.speakVerificationResult(
+      status,
+      verifiedStudentName: verifiedStudentName,
+    );
   }
 }
 
@@ -4181,19 +4195,27 @@ class ExamVerifyFeedback {
     'examverify/mobile_speech',
   );
 
-  static Future<void> playVerificationTone(VerificationStatus status) async {
+  static Future<void> speakVerificationResult(
+    VerificationStatus status, {
+    String? verifiedStudentName,
+  }) async {
     try {
+      final cleanName = verifiedStudentName?.trim();
+      final phrase =
+          status == VerificationStatus.verified &&
+              cleanName != null &&
+              cleanName.isNotEmpty
+          ? '$cleanName. Access granted'
+          : 'Access denied';
       if (Platform.isWindows) {
-        final phrase = status == VerificationStatus.verified
-            ? 'Access granted'
-            : 'Access denied';
-        final tones = status == VerificationStatus.verified
-            ? '[console]::beep(880,180); Start-Sleep -Milliseconds 70; [console]::beep(1175,220)'
-            : '[console]::beep(330,240); Start-Sleep -Milliseconds 80; [console]::beep(220,280)';
+        final encodedPhrase = base64Encode(utf8.encode(phrase));
         final script =
             r'''
 try {
   Add-Type -AssemblyName System.Speech
+  $phrase = [Text.Encoding]::UTF8.GetString(
+    [Convert]::FromBase64String('__PHRASE_BASE64__')
+  )
   $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
   $female = $synth.GetInstalledVoices() |
     Where-Object { $_.Enabled -and $_.VoiceInfo.Gender -eq 'Female' } |
@@ -4201,12 +4223,10 @@ try {
   if ($female) { $synth.SelectVoice($female.VoiceInfo.Name) }
   $synth.Rate = 1
   $synth.Volume = 100
-  $synth.Speak('__PHRASE__')
+  $synth.Speak($phrase)
 } catch {}
-__TONES__
 '''
-                .replaceFirst('__PHRASE__', phrase)
-                .replaceFirst('__TONES__', tones);
+                .replaceFirst('__PHRASE_BASE64__', encodedPhrase);
         await Process.run('powershell.exe', [
           '-NoProfile',
           '-NonInteractive',
@@ -4216,19 +4236,7 @@ __TONES__
         return;
       }
       if (Platform.isAndroid) {
-        await _mobileSpeech.invokeMethod<void>('speak', {
-          'text': status == VerificationStatus.verified
-              ? 'Access granted'
-              : 'Access denied',
-        });
-      }
-      final sound = status == VerificationStatus.verified
-          ? SystemSoundType.click
-          : SystemSoundType.alert;
-      await SystemSound.play(sound);
-      if (status != VerificationStatus.verified) {
-        await Future<void>.delayed(const Duration(milliseconds: 180));
-        await SystemSound.play(SystemSoundType.alert);
+        await _mobileSpeech.invokeMethod<void>('speak', {'text': phrase});
       }
     } catch (_) {
       // Feedback must never interrupt or change a verification decision.
