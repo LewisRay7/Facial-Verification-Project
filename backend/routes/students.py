@@ -224,13 +224,9 @@ def _profile_with_history(
     updated = dict(incoming)
     current_samples = _profile_samples(current)
     incoming_samples = _profile_samples(incoming)
-    combined: list[list[float]] = []
-    for sample in [*incoming_samples, *current_samples]:
-        if sample and sample not in combined:
-            combined.append(sample)
-    if combined:
-        updated["signature"] = combined[0]
-        updated["embeddings"] = combined[:5]
+    if incoming_samples:
+        updated["signature"] = incoming_samples[0]
+        updated["embeddings"] = incoming_samples[:5]
     history = list(current.get("replacement_history") or [])
     history.append(
         {

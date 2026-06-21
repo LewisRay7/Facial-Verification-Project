@@ -702,7 +702,11 @@ class ExamSessionEligibilityTests(unittest.TestCase):
         self.assertEqual(accepted.status_code, 200)
         student = accepted.json()["student"]
         self.assertEqual(student["biometric_profile_version"], 2)
-        self.assertEqual(len(student["biometric_profile"]["embeddings"]), 2)
+        self.assertEqual(len(student["biometric_profile"]["embeddings"]), 1)
+        self.assertEqual(
+            student["biometric_profile"]["embeddings"][0],
+            [0.7] * 192,
+        )
         self.assertEqual(
             student["biometric_profile"]["replacement_history"][-1]["reason"],
             "Appearance changed after enrollment.",
