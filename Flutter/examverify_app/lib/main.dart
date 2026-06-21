@@ -3731,10 +3731,7 @@ class _VerifyPageState extends State<VerifyPage> {
             ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${resolvedDecision.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.${resolvedDecision.otherSessionActivity ? ' Warning: student has verification activity in another session.' : ''}'
             : resolvedDecision.reason;
       });
-      await ExamVerifyFeedback.speakVerificationResult(
-        finalStatus,
-        verifiedStudentName: approved ? student.fullName : null,
-      );
+      await ExamVerifyFeedback.speakVerificationResult(finalStatus);
     } catch (error) {
       if (!mounted) return;
       setState(() => resultMessage = error.toString());
@@ -4144,12 +4141,7 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
         score: bestScore,
         message: message,
       );
-      await _speakVerificationResult(
-        outcome.status,
-        verifiedStudentName: outcome.status == VerificationStatus.verified
-            ? outcome.student?.fullName
-            : null,
-      );
+      await _speakVerificationResult(outcome.status);
       return outcome;
     } catch (error) {
       final message = error.toString();
@@ -4165,14 +4157,8 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
     }
   }
 
-  Future<void> _speakVerificationResult(
-    VerificationStatus status, {
-    String? verifiedStudentName,
-  }) async {
-    await ExamVerifyFeedback.speakVerificationResult(
-      status,
-      verifiedStudentName: verifiedStudentName,
-    );
+  Future<void> _speakVerificationResult(VerificationStatus status) async {
+    await ExamVerifyFeedback.speakVerificationResult(status);
   }
 }
 
@@ -4195,17 +4181,10 @@ class ExamVerifyFeedback {
     'examverify/mobile_speech',
   );
 
-  static Future<void> speakVerificationResult(
-    VerificationStatus status, {
-    String? verifiedStudentName,
-  }) async {
+  static Future<void> speakVerificationResult(VerificationStatus status) async {
     try {
-      final cleanName = verifiedStudentName?.trim();
-      final phrase =
-          status == VerificationStatus.verified &&
-              cleanName != null &&
-              cleanName.isNotEmpty
-          ? '$cleanName. Access granted'
+      final phrase = status == VerificationStatus.verified
+          ? 'Access granted'
           : 'Access denied';
       if (Platform.isWindows) {
         final encodedPhrase = base64Encode(utf8.encode(phrase));
