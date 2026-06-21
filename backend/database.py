@@ -91,6 +91,21 @@ def _ensure_exam_session_columns() -> None:
     student_migrations = {
         "level": "ALTER TABLE students ADD COLUMN level VARCHAR(60) NOT NULL DEFAULT ''",
         "status": "ALTER TABLE students ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'active'",
+        "enrollment_status": (
+            "ALTER TABLE students ADD COLUMN enrollment_status "
+            "VARCHAR(30) NOT NULL DEFAULT 'approved'"
+        ),
+        "enrollment_reviewed_by": (
+            "ALTER TABLE students ADD COLUMN enrollment_reviewed_by "
+            "VARCHAR(80) NOT NULL DEFAULT ''"
+        ),
+        "enrollment_reviewed_at": (
+            "ALTER TABLE students ADD COLUMN enrollment_reviewed_at DATETIME"
+        ),
+        "biometric_profile_version": (
+            "ALTER TABLE students ADD COLUMN biometric_profile_version "
+            "INTEGER NOT NULL DEFAULT 1"
+        ),
     }
     log_migrations = {
         "exam_session_id": "ALTER TABLE verification_logs ADD COLUMN exam_session_id INTEGER",

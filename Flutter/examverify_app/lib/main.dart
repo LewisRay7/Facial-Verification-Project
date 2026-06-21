@@ -32,6 +32,112 @@ String _studentSelectionKey(StudentRecord student) =>
     student.studentNumberHash ??
     AuthService.hashIdentifier(student.studentNumber);
 
+class _StepUpProof {
+  const _StepUpProof({
+    required this.method,
+    this.assertedStudentNumberHash = '',
+    this.adminOverride = false,
+    this.overrideReason = '',
+  });
+
+  final String method;
+  final String assertedStudentNumberHash;
+  final bool adminOverride;
+  final String overrideReason;
+}
+
+Future<_StepUpProof?> _requestStepUpProof(
+  BuildContext context,
+  StudentRecord student,
+  AuthUser actor,
+) async {
+  final idController = TextEditingController();
+  final reasonController = TextEditingController();
+  final result = await showDialog<_StepUpProof>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Additional identity confirmation'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'The face is unusually similar to another stored profile. '
+              'Ask ${student.fullName} to enter the full student ID.',
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: idController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Full student ID / matric number',
+              ),
+            ),
+            if (actor.isAdmin) ...[
+              const SizedBox(height: 16),
+              const Divider(color: AppColors.border),
+              const Text(
+                'Administrator override',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Override reason',
+                  hintText: 'Manual portrait and ID card confirmed',
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Cancel verification'),
+        ),
+        if (actor.isAdmin)
+          TextButton(
+            onPressed: () {
+              final reason = reasonController.text.trim();
+              if (reason.isEmpty) return;
+              Navigator.of(dialogContext).pop(
+                _StepUpProof(
+                  method: 'admin_override',
+                  adminOverride: true,
+                  overrideReason: reason,
+                ),
+              );
+            },
+            child: const Text('Admin override'),
+          ),
+        FilledButton(
+          onPressed: () {
+            final enteredId = idController.text.trim();
+            if (enteredId.isEmpty) return;
+            Navigator.of(dialogContext).pop(
+              _StepUpProof(
+                method: 'student_id',
+                assertedStudentNumberHash: AuthService.hashIdentifier(
+                  enteredId,
+                ),
+              ),
+            );
+          },
+          child: const Text('Confirm student ID'),
+        ),
+      ],
+    ),
+  );
+  idController.dispose();
+  reasonController.dispose();
+  return result;
+}
+
 List<ExamSessionRecord> _dedupeExamSessions(
   Iterable<ExamSessionRecord> sessions,
 ) {
@@ -146,6 +252,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
   List<ExamSessionRecord> examSessions = const [];
   List<ExamEligibilityRecord> examEligibilities = const [];
   bool loading = true;
+  bool offlineFallbackActive = false;
   AuthUser? authUser;
   DateTime? lastActivity;
   String? authMessage;
@@ -272,10 +379,19 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     List<VerificationRecord> loadedLogs = const [];
     List<ExamSessionRecord> loadedSessions = const [];
     List<ExamEligibilityRecord> loadedEligibilities = const [];
+    var usedOfflineFallback = false;
     if (!widget.skipPersistence) {
       try {
         final client = onlineClient;
         if (client != null) {
+          for (final pending in await store.listPendingLogs()) {
+            try {
+              await client.recordVerification(pending);
+              if (pending.id != null) await store.markLogSynced(pending.id!);
+            } catch (_) {
+              break;
+            }
+          }
           final localStudents = await store.listStudents();
           final deletedStudentHashes = await store.listDeletedStudentHashes();
           if (authUser?.isAdmin ?? false) {
@@ -311,6 +427,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
             loadedEligibilities.addAll(rows);
           }
           await store.replaceExamEligibilities(loadedEligibilities);
+          await store.markExamCacheRefreshed();
         } else {
           loadedStudents = await store.listStudents();
           loadedLogs = await store.listLogs();
@@ -318,8 +435,17 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
           loadedEligibilities = await store.listExamEligibilities();
         }
       } catch (_) {
-        // Widget tests run without the Android sqflite plugin. The real app uses
-        // the on-device database; tests can still render the dashboard shell.
+        try {
+          loadedStudents = await store.listStudents();
+          loadedLogs = await store.listLogs();
+          if (await store.isExamCacheUsable()) {
+            loadedSessions = await store.listExamSessions();
+            loadedEligibilities = await store.listExamEligibilities();
+            usedOfflineFallback = true;
+          }
+        } catch (_) {
+          // Widget tests run without the platform database plugin.
+        }
       }
     }
     loadedLogs = _hydrateVerificationLogs(loadedLogs, loadedStudents);
@@ -329,6 +455,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       logs = loadedLogs;
       examSessions = loadedSessions;
       examEligibilities = loadedEligibilities;
+      offlineFallbackActive = usedOfflineFallback || onlineClient == null;
       loading = false;
     });
   }
@@ -379,8 +506,15 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       signature: remote.signature.isNotEmpty
           ? remote.signature
           : local.signature,
+      signatureSamples: remote.signatureSamples.isNotEmpty
+          ? remote.signatureSamples
+          : local.signatureSamples,
       backendEmbedding: remote.backendEmbedding ?? local.backendEmbedding,
       backendName: remote.backendName ?? local.backendName,
+      reviewConfirmed: remote.reviewConfirmed || local.reviewConfirmed,
+      biometricProfileVersion: math
+          .max(remote.biometricProfileVersion, local.biometricProfileVersion)
+          .toInt(),
     );
   }
 
@@ -435,7 +569,9 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
             : selectedIndex;
         final autoIdentifyKiosk =
             isDesktop && availableItems[safeIndex].label == 'Auto Identify';
-        final body = _pageForItem(availableItems[safeIndex]);
+        final body = _withOfflineBanner(
+          _pageForItem(availableItems[safeIndex]),
+        );
 
         return Scaffold(
           body: Container(
@@ -553,6 +689,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
         authUser: authUser!,
+        offlineEvaluator: _evaluateOfflineExamEntry,
       ),
       'Auto Identify' => AutoIdentifyPage(
         students: students,
@@ -561,6 +698,7 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
         onVerificationSaved: _saveVerificationInPlace,
         onlineClient: onlineClient,
         authUser: authUser!,
+        offlineEvaluator: _evaluateOfflineExamEntry,
       ),
       'Students' => StudentsPage(
         students: students,
@@ -584,6 +722,29 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
       'Access Requests' => AdminRequestsPage(client: onlineClient),
       _ => LogsPage(logs: logs),
     };
+  }
+
+  Widget _withOfflineBanner(Widget child) {
+    if (!offlineFallbackActive) return child;
+    return Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          color: AppColors.amber.withValues(alpha: 0.16),
+          child: const Text(
+            'OFFLINE MODE: using a device-protected exam cache valid for up to '
+            '24 hours. Verification logs will synchronize after reconnection.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AppColors.amber,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        Expanded(child: child),
+      ],
+    );
   }
 
   void _selectPage(String label) {
@@ -616,6 +777,18 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
     });
   }
 
+  Future<ExamEntryDecision> _evaluateOfflineExamEntry({
+    required int sessionId,
+    required StudentRecord? student,
+    required bool livenessPassed,
+    required bool identityMatched,
+  }) => store.evaluateOfflineExamEntry(
+    sessionId: sessionId,
+    student: student,
+    livenessPassed: livenessPassed,
+    identityMatched: identityMatched,
+  );
+
   Future<void> _saveVerificationInPlace(VerificationRecord record) =>
       _saveVerificationRecord(record, navigateToLogs: false);
 
@@ -625,14 +798,28 @@ class _ExamVerifyShellState extends State<ExamVerifyShell> {
   }) async {
     _touchSession();
     final client = onlineClient;
+    final localId = await store.addLog(record, pendingSync: client != null);
     if (client != null) {
-      await client.recordVerification(record);
-    } else {
-      await store.addLog(record);
+      try {
+        await client.recordVerification(record);
+        await store.markLogSynced(localId);
+      } catch (_) {
+        // The signed local record remains pending and is replayed after reconnect.
+      }
     }
-    final loadedLogs = client != null
-        ? _hydrateVerificationLogs(await client.listLogs(), students)
-        : _hydrateVerificationLogs(await store.listLogs(), students);
+    List<VerificationRecord> loadedLogs;
+    if (client != null) {
+      try {
+        loadedLogs = _hydrateVerificationLogs(
+          await client.listLogs(),
+          students,
+        );
+      } catch (_) {
+        loadedLogs = _hydrateVerificationLogs(await store.listLogs(), students);
+      }
+    } else {
+      loadedLogs = _hydrateVerificationLogs(await store.listLogs(), students);
+    }
     if (!mounted) return;
     setState(() {
       logs = loadedLogs;
@@ -3075,19 +3262,27 @@ class _RegisterPageState extends State<RegisterPage> {
       } else {
         signature = await FaceEngine.createSignature(storedPhoto);
       }
-      await widget.onStudentRegistered(
-        StudentRecord(
-          studentNumber: studentNumber,
-          fullName: fullNameController.text.trim(),
-          program: programController.text.trim(),
-          level: levelController.text.trim(),
-          eligible: eligible,
-          note: noteController.text.trim(),
-          photoPath: storedPhoto.path,
-          signature: signature,
-          backendName: FaceEngine.signatureBackend,
-        ),
+      final draft = StudentRecord(
+        studentNumber: studentNumber,
+        fullName: fullNameController.text.trim(),
+        program: programController.text.trim(),
+        level: levelController.text.trim(),
+        eligible: eligible,
+        note: noteController.text.trim(),
+        photoPath: storedPhoto.path,
+        signature: signature,
+        backendName: FaceEngine.signatureBackend,
       );
+      if (!mounted) return;
+      final approved = await _reviewEnrollment(draft);
+      if (!approved) {
+        setState(() {
+          helperMessage =
+              'Enrollment was not saved. Review the details and try again.';
+        });
+        return;
+      }
+      await widget.onStudentRegistered(draft.copyWith(reviewConfirmed: true));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Student record saved locally.')),
@@ -3108,6 +3303,65 @@ class _RegisterPageState extends State<RegisterPage> {
       if (mounted) setState(() => saving = false);
     }
   }
+
+  Future<bool> _reviewEnrollment(StudentRecord student) async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Approve biometric enrollment'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.file(
+                      File(student.photoPath),
+                      height: 220,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    student.fullName,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Student ID: ${student.studentNumber}\n'
+                    'Program: ${student.program}\n'
+                    'Level: ${student.level.isEmpty ? 'Not recorded' : student.level}',
+                    style: const TextStyle(color: AppColors.muted),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Confirm that this live portrait belongs to the student '
+                    'shown above. Approval is recorded in the audit trail.',
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Capture again'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                icon: const Icon(Icons.verified_user_outlined),
+                label: const Text('Approve enrollment'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
 }
 
 class VerifyPage extends StatefulWidget {
@@ -3118,6 +3372,7 @@ class VerifyPage extends StatefulWidget {
     required this.onVerificationSaved,
     this.onlineClient,
     required this.authUser,
+    required this.offlineEvaluator,
     super.key,
   });
 
@@ -3127,6 +3382,13 @@ class VerifyPage extends StatefulWidget {
   final Future<void> Function(VerificationRecord record) onVerificationSaved;
   final OnlineBackendClient? onlineClient;
   final AuthUser authUser;
+  final Future<ExamEntryDecision> Function({
+    required int sessionId,
+    required StudentRecord? student,
+    required bool livenessPassed,
+    required bool identityMatched,
+  })
+  offlineEvaluator;
 
   @override
   State<VerifyPage> createState() => _VerifyPageState();
@@ -3358,7 +3620,7 @@ class _VerifyPageState extends State<VerifyPage> {
         return;
       }
       final liveSignature = await FaceEngine.createSignature(storedLivePhoto);
-      if (!FaceEngine.canCompareSignatures(student.signature, liveSignature)) {
+      if (!FaceEngine.canCompareStudent(student, liveSignature)) {
         throw FaceEngineException(
           'This student does not have a compatible MobileFaceNet profile. Sync or re-enroll the student using the mobile scanner.',
         );
@@ -3366,20 +3628,17 @@ class _VerifyPageState extends State<VerifyPage> {
       final ranked = [
         for (final candidate in widget.students)
           if (candidate.id != null &&
-              FaceEngine.canCompareSignatures(
-                candidate.signature,
-                liveSignature,
-              ))
+              FaceEngine.canCompareStudent(candidate, liveSignature))
             MapEntry(
               candidate,
-              FaceEngine.distance(candidate.signature, liveSignature),
+              FaceEngine.minimumStudentDistance(candidate, liveSignature),
             ),
       ]..sort((a, b) => a.value.compareTo(b.value));
       final selectedMatch = ranked.firstWhere(
         (match) => match.key.studentNumber == student.studentNumber,
         orElse: () => MapEntry(
           student,
-          FaceEngine.distance(student.signature, liveSignature),
+          FaceEngine.minimumStudentDistance(student, liveSignature),
         ),
       );
       final score = selectedMatch.value;
@@ -3390,32 +3649,64 @@ class _VerifyPageState extends State<VerifyPage> {
           ranked.length <= 1 ||
           (selectedIsBest &&
               ranked[1].value - score >= FaceEngine.verificationMinimumGap);
-      final verified =
-          selectedIsBest &&
-          selectedHasGap &&
-          score <= FaceEngine.verificationThreshold &&
-          student.eligible;
       final eligibility = _eligibilityFor(session, student);
-      final sessionAllowed =
-          verified &&
-          student.status == 'active' &&
-          eligibility != null &&
-          eligibility.eligibilityStatus == 'eligible' &&
-          eligibility.attendanceStatus != 'verified';
-      final cloudDecision = widget.onlineClient == null
-          ? null
-          : await widget.onlineClient!.evaluateExamEntry(
-              sessionId: session.id,
-              student: student,
-              matchScore: score,
-              confidenceGap: ranked.length > 1 ? ranked[1].value - score : 1,
-              matchThreshold: FaceEngine.verificationThreshold,
-              minimumConfidenceGap: FaceEngine.verificationMinimumGap,
-              livenessPassed: true,
-              identityMatched: selectedIsBest,
-              deviceType: Platform.isWindows ? 'desktop' : 'mobile',
-            );
-      final approved = cloudDecision?.verified ?? sessionAllowed;
+      ExamEntryDecision? cloudDecision;
+      if (widget.onlineClient != null) {
+        try {
+          cloudDecision = await widget.onlineClient!.evaluateExamEntry(
+            sessionId: session.id,
+            student: student,
+            matchScore: score,
+            confidenceGap: ranked.length > 1 ? ranked[1].value - score : 1,
+            matchThreshold: FaceEngine.verificationThreshold,
+            minimumConfidenceGap: FaceEngine.verificationMinimumGap,
+            livenessPassed: true,
+            identityMatched: selectedIsBest,
+            deviceType: Platform.isWindows ? 'desktop' : 'mobile',
+          );
+        } catch (_) {
+          cloudDecision = await widget.offlineEvaluator(
+            sessionId: session.id,
+            student: student,
+            livenessPassed: true,
+            identityMatched: selectedIsBest && selectedHasGap,
+          );
+        }
+      } else {
+        cloudDecision = await widget.offlineEvaluator(
+          sessionId: session.id,
+          student: student,
+          livenessPassed: true,
+          identityMatched: selectedIsBest && selectedHasGap,
+        );
+      }
+      if (cloudDecision.stepUpRequired && mounted) {
+        final proof = await _requestStepUpProof(
+          context,
+          student,
+          widget.authUser,
+        );
+        if (proof != null) {
+          cloudDecision = await widget.onlineClient!.evaluateExamEntry(
+            sessionId: session.id,
+            student: student,
+            matchScore: score,
+            confidenceGap: ranked.length > 1 ? ranked[1].value - score : 1,
+            matchThreshold: FaceEngine.verificationThreshold,
+            minimumConfidenceGap: FaceEngine.verificationMinimumGap,
+            livenessPassed: true,
+            identityMatched: selectedIsBest,
+            deviceType: Platform.isWindows ? 'desktop' : 'mobile',
+            stepUpVerified: true,
+            stepUpMethod: proof.method,
+            assertedStudentNumberHash: proof.assertedStudentNumberHash,
+            adminOverride: proof.adminOverride,
+            overrideReason: proof.overrideReason,
+          );
+        }
+      }
+      final resolvedDecision = cloudDecision;
+      final approved = resolvedDecision.verified;
       final finalStatus = approved
           ? VerificationStatus.verified
           : VerificationStatus.notVerified;
@@ -3437,19 +3728,8 @@ class _VerifyPageState extends State<VerifyPage> {
         resultStatus = finalStatus;
         resultScore = score;
         resultMessage = approved
-            ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${cloudDecision?.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.${cloudDecision?.otherSessionActivity == true ? ' Warning: student has verification activity in another session.' : ''}'
-            : cloudDecision != null
-            ? cloudDecision.reason
-            : !selectedIsBest
-            ? 'Not verified: the live face does not match the selected student.'
-            : !selectedHasGap
-            ? 'Not verified: identity confidence is not unique enough. Use the student record for manual confirmation.'
-            : eligibility == null
-            ? 'Access denied: ${student.fullName} is registered but not eligible for ${session.courseCode}.'
-            : eligibility.attendanceStatus == 'verified'
-            ? 'Already verified for ${session.courseCode} (${session.examDate} ${session.startTime}). '
-                  'Reset attendance for this exact session before retesting.'
-            : 'Not verified. The biometric score or eligibility check failed.';
+            ? 'Verified ${student.fullName} for ${session.courseCode}. Eligibility: ${resolvedDecision.eligibilityType ?? eligibility?.eligibilityType ?? 'regular'}.${resolvedDecision.otherSessionActivity ? ' Warning: student has verification activity in another session.' : ''}'
+            : resolvedDecision.reason;
       });
       await ExamVerifyFeedback.playVerificationTone(finalStatus);
     } catch (error) {
@@ -3483,6 +3763,7 @@ class AutoIdentifyPage extends StatefulWidget {
     required this.onVerificationSaved,
     this.onlineClient,
     required this.authUser,
+    required this.offlineEvaluator,
     super.key,
   });
 
@@ -3492,6 +3773,13 @@ class AutoIdentifyPage extends StatefulWidget {
   final Future<void> Function(VerificationRecord record) onVerificationSaved;
   final OnlineBackendClient? onlineClient;
   final AuthUser authUser;
+  final Future<ExamEntryDecision> Function({
+    required int sessionId,
+    required StudentRecord? student,
+    required bool livenessPassed,
+    required bool identityMatched,
+  })
+  offlineEvaluator;
 
   @override
   State<AutoIdentifyPage> createState() => _AutoIdentifyPageState();
@@ -3733,10 +4021,10 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
       final ranked = [
         for (final student in widget.students)
           if (student.id != null &&
-              FaceEngine.canCompareSignatures(student.signature, liveSignature))
+              FaceEngine.canCompareStudent(student, liveSignature))
             MapEntry(
               student,
-              FaceEngine.distance(student.signature, liveSignature),
+              FaceEngine.minimumStudentDistance(student, liveSignature),
             ),
       ]..sort((a, b) => a.value.compareTo(b.value));
 
@@ -3756,29 +4044,65 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
           bestStudent != null &&
           bestScore <= FaceEngine.identificationThreshold &&
           hasGap;
-      final eligibility = bestStudent == null
-          ? null
-          : _eligibilityFor(session, bestStudent);
-      final sessionAllowed =
-          verified &&
-          bestStudent.status == 'active' &&
-          eligibility != null &&
-          eligibility.eligibilityStatus == 'eligible' &&
-          eligibility.attendanceStatus != 'verified';
-      final cloudDecision = widget.onlineClient == null
-          ? null
-          : await widget.onlineClient!.evaluateExamEntry(
-              sessionId: session.id,
-              student: bestStudent,
-              matchScore: bestScore,
-              confidenceGap: secondScore == null ? 1 : secondScore - bestScore,
-              matchThreshold: FaceEngine.identificationThreshold,
-              minimumConfidenceGap: FaceEngine.identificationMinimumGap,
-              livenessPassed: true,
-              identityMatched: verified,
-              deviceType: Platform.isWindows ? 'desktop' : 'mobile',
-            );
-      final approved = cloudDecision?.verified ?? sessionAllowed;
+      final faceWithinThreshold =
+          bestStudent != null &&
+          bestScore <= FaceEngine.identificationThreshold;
+      ExamEntryDecision? cloudDecision;
+      if (widget.onlineClient != null) {
+        try {
+          cloudDecision = await widget.onlineClient!.evaluateExamEntry(
+            sessionId: session.id,
+            student: bestStudent,
+            matchScore: bestScore,
+            confidenceGap: secondScore == null ? 1 : secondScore - bestScore,
+            matchThreshold: FaceEngine.identificationThreshold,
+            minimumConfidenceGap: FaceEngine.identificationMinimumGap,
+            livenessPassed: true,
+            identityMatched: faceWithinThreshold,
+            deviceType: Platform.isWindows ? 'desktop' : 'mobile',
+          );
+        } catch (_) {
+          cloudDecision = await widget.offlineEvaluator(
+            sessionId: session.id,
+            student: bestStudent,
+            livenessPassed: true,
+            identityMatched: verified,
+          );
+        }
+      } else {
+        cloudDecision = await widget.offlineEvaluator(
+          sessionId: session.id,
+          student: bestStudent,
+          livenessPassed: true,
+          identityMatched: verified,
+        );
+      }
+      if (cloudDecision.stepUpRequired && bestStudent != null && mounted) {
+        final proof = await _requestStepUpProof(
+          context,
+          bestStudent,
+          widget.authUser,
+        );
+        if (proof != null) {
+          cloudDecision = await widget.onlineClient!.evaluateExamEntry(
+            sessionId: session.id,
+            student: bestStudent,
+            matchScore: bestScore,
+            confidenceGap: secondScore == null ? 1 : secondScore - bestScore,
+            matchThreshold: FaceEngine.identificationThreshold,
+            minimumConfidenceGap: FaceEngine.identificationMinimumGap,
+            livenessPassed: true,
+            identityMatched: faceWithinThreshold,
+            deviceType: Platform.isWindows ? 'desktop' : 'mobile',
+            stepUpVerified: true,
+            stepUpMethod: proof.method,
+            assertedStudentNumberHash: proof.assertedStudentNumberHash,
+            adminOverride: proof.adminOverride,
+            overrideReason: proof.overrideReason,
+          );
+        }
+      }
+      final approved = cloudDecision.verified;
       await widget.onVerificationSaved(
         VerificationRecord(
           time: DateTime.now(),
@@ -3797,20 +4121,8 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
       final matchedName = bestStudent?.fullName ?? 'Student';
       final matchedNumber = bestStudent?.studentNumber ?? 'UNKNOWN';
       final message = approved
-          ? 'Verified $matchedName. Student ID $matchedNumber.${cloudDecision?.otherSessionActivity == true ? ' Warning: student has verification activity in another session.' : ''}'
-          : cloudDecision != null
-          ? cloudDecision.reason
-          : ranked.isEmpty
-          ? 'No compatible MobileFaceNet profiles found. Sync or enroll students with the mobile scanner.'
-          : !hasGap
-          ? 'Unauthorized: identity confidence is not unique enough. Use manual student record confirmation.'
-          : bestStudent != null && eligibility == null
-          ? 'Access denied: $matchedName is registered but not eligible for ${session.courseCode}.'
-          : bestStudent != null && eligibility?.attendanceStatus == 'verified'
-          ? 'Already verified: $matchedName was already verified for '
-                '${session.courseCode} (${session.examDate} ${session.startTime}). '
-                'Reset attendance for this exact session before retesting.'
-          : 'Unauthorized: no trusted student profile matched this scan.';
+          ? 'Verified $matchedName. Student ID $matchedNumber.${cloudDecision.otherSessionActivity ? ' Warning: student has verification activity in another session.' : ''}'
+          : cloudDecision.reason;
       if (mounted) {
         setState(() {
           resultStudent = bestStudent;
@@ -3843,17 +4155,6 @@ class _AutoIdentifyPageState extends State<AutoIdentifyPage> {
     } finally {
       if (mounted) setState(() => identifying = false);
     }
-  }
-
-  ExamEligibilityRecord? _eligibilityFor(
-    ExamSessionRecord session,
-    StudentRecord student,
-  ) {
-    final studentId = student.id;
-    if (studentId == null) return null;
-    return widget.examEligibilities.firstWhereOrNull(
-      (row) => row.examSessionId == session.id && row.studentId == studentId,
-    );
   }
 
   Future<void> _playVerificationTone(VerificationStatus status) async {
@@ -4094,9 +4395,11 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
         livenessFrames = 0;
         setState(() {
           phase = _KioskScanPhase.idle;
-          message = nextSignal.faceCount == 1
-              ? 'Weak face signal. Step closer and face the camera directly.'
-              : 'Idle. Waiting for one student to step into frame.';
+          message = nextSignal.faceCount != 1
+              ? 'Idle. Waiting for one student to step into frame.'
+              : nextSignal.quality < 0.24
+              ? 'Poor lighting detected. Move to better lighting and face the light source.'
+              : 'Image is blurred or the face is too far away. Step closer and hold still.';
         });
         return;
       }
@@ -4115,7 +4418,9 @@ class _DesktopAutoIdentifyKioskState extends State<_DesktopAutoIdentifyKiosk>
           phase = _KioskScanPhase.faceDetected;
           message = liveEnough
               ? 'Face detected. Hold still for liveness confirmation...'
-              : 'Face detected. Center face until quality reaches 62% in steady light.';
+              : nextSignal.quality < minimumQuality
+              ? 'Poor lighting or blur detected. Improve lighting, move closer, and hold still.'
+              : 'Center your face and look directly at the camera.';
         });
         return;
       }
@@ -4566,6 +4871,12 @@ class _StudentsPageState extends State<StudentsPage> {
                         icon: const Icon(Icons.edit_outlined),
                       ),
                       IconButton(
+                        tooltip: 'Replace biometric enrollment',
+                        onPressed: () =>
+                            _replaceBiometricEnrollment(context, student),
+                        icon: const Icon(Icons.face_retouching_natural),
+                      ),
+                      IconButton(
                         tooltip: 'Toggle eligibility',
                         onPressed: () => widget.onToggleEligibility(student),
                         icon: const Icon(Icons.swap_horiz),
@@ -4699,6 +5010,112 @@ class _StudentsPageState extends State<StudentsPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('${updated.fullName} has been updated.')),
     );
+  }
+
+  Future<void> _replaceBiometricEnrollment(
+    BuildContext context,
+    StudentRecord student,
+  ) async {
+    final captured = await showBiometricScanner(
+      context,
+      mode: BiometricScanMode.enrollment,
+    );
+    if (captured == null || !context.mounted) return;
+    final reasonController = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Approve biometric replacement'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.file(
+                  captured,
+                  height: 210,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                '${student.fullName}\n'
+                'Student ID: ${student.studentNumber}\n'
+                'Current profile version: ${student.biometricProfileVersion}',
+                style: const TextStyle(color: AppColors.muted),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: reasonController,
+                decoration: const InputDecoration(
+                  labelText: 'Reason for replacement',
+                  hintText: 'Appearance change, damaged record, correction...',
+                ),
+                maxLines: 2,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = reasonController.text.trim();
+              if (value.isNotEmpty) Navigator.of(dialogContext).pop(value);
+            },
+            child: const Text('Approve replacement'),
+          ),
+        ],
+      ),
+    );
+    reasonController.dispose();
+    if (reason == null || !context.mounted) return;
+    try {
+      final storedPhoto = await ExamVerifyFiles.saveStudentPhoto(
+        captured,
+        student.studentNumber,
+        'replacement',
+      );
+      final signature = Platform.isWindows
+          ? await PythonFaceBackend.createMobileSignature(storedPhoto.path)
+          : await FaceEngine.createSignature(storedPhoto);
+      await widget.onStudentUpdated(
+        student.copyWith(
+          photoPath: storedPhoto.path,
+          signature: signature,
+          signatureSamples: [
+            signature,
+            ...student.signatureSamples.where((sample) => sample != signature),
+            if (student.signatureSamples.isEmpty &&
+                student.signature != signature)
+              student.signature,
+          ].take(5).toList(),
+          reviewConfirmed: true,
+          replaceBiometricProfile: true,
+          replacementReason: reason,
+          biometricProfileVersion: student.biometricProfileVersion + 1,
+        ),
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${student.fullName} biometric profile was replaced and audited.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not replace biometric profile: $error')),
+      );
+    }
   }
 }
 
@@ -7418,15 +7835,26 @@ class _BiometricScannerScreenState extends State<BiometricScannerScreen>
         : Platform.isWindows
         ? 'Face locked. Capturing in a moment.'
         : 'Face locked. Hold still for 2 seconds.';
+    final minimumQuality = Platform.isWindows
+        ? minimumDesktopScanQuality
+        : minimumMobileScanQuality;
+    final captureWarning = nextSignal.faceCount > 1
+        ? 'Multiple faces detected. Only the closest student should remain in frame.'
+        : nextSignal.facePresent && nextSignal.quality < 0.24
+        ? 'Poor lighting detected. Move to better lighting and face the light source.'
+        : nextSignal.facePresent && nextSignal.quality < minimumQuality
+        ? 'Image is blurred or the face is too far away. Move closer and hold still.'
+        : null;
     final nextMessage = passed
         ? portraitMode
               ? 'Portrait quality locked. Capturing image...'
               : 'Confirmed: ${challenges[challengeIndex].label} detected'
-        : nextSignal.facePresent
-        ? portraitMode
-              ? portraitHoldMessage
-              : challenges[challengeIndex].detail
-        : nextSignal.message;
+        : captureWarning ??
+              (nextSignal.facePresent
+                  ? portraitMode
+                        ? portraitHoldMessage
+                        : challenges[challengeIndex].detail
+                  : nextSignal.message);
     final now = DateTime.now();
     final shouldUpdate =
         nextMessage != message ||
@@ -9035,8 +9463,13 @@ class StudentRecord {
     required this.note,
     required this.photoPath,
     required this.signature,
+    this.signatureSamples = const [],
     this.backendEmbedding,
     this.backendName,
+    this.reviewConfirmed = false,
+    this.replaceBiometricProfile = false,
+    this.replacementReason = '',
+    this.biometricProfileVersion = 1,
   });
 
   final int? id;
@@ -9050,8 +9483,13 @@ class StudentRecord {
   final String note;
   final String photoPath;
   final List<double> signature;
+  final List<List<double>> signatureSamples;
   final String? backendEmbedding;
   final String? backendName;
+  final bool reviewConfirmed;
+  final bool replaceBiometricProfile;
+  final String replacementReason;
+  final int biometricProfileVersion;
 
   StudentRecord copyWith({
     String? fullName,
@@ -9061,6 +9499,13 @@ class StudentRecord {
     String? note,
     String? backendEmbedding,
     String? backendName,
+    String? photoPath,
+    List<double>? signature,
+    List<List<double>>? signatureSamples,
+    bool? reviewConfirmed,
+    bool? replaceBiometricProfile,
+    String? replacementReason,
+    int? biometricProfileVersion,
   }) {
     return StudentRecord(
       id: id,
@@ -9073,10 +9518,17 @@ class StudentRecord {
       status: status,
       eligible: eligible ?? this.eligible,
       note: note ?? this.note,
-      photoPath: photoPath,
-      signature: signature,
+      photoPath: photoPath ?? this.photoPath,
+      signature: signature ?? this.signature,
+      signatureSamples: signatureSamples ?? this.signatureSamples,
       backendEmbedding: backendEmbedding ?? this.backendEmbedding,
       backendName: backendName ?? this.backendName,
+      reviewConfirmed: reviewConfirmed ?? this.reviewConfirmed,
+      replaceBiometricProfile:
+          replaceBiometricProfile ?? this.replaceBiometricProfile,
+      replacementReason: replacementReason ?? this.replacementReason,
+      biometricProfileVersion:
+          biometricProfileVersion ?? this.biometricProfileVersion,
     );
   }
 
@@ -9094,8 +9546,14 @@ class StudentRecord {
       'note': note,
       'photo_path': photoPath,
       'signature_json': jsonEncode(signature),
+      'signature_samples_json': jsonEncode(
+        signatureSamples.isEmpty ? [signature] : signatureSamples,
+      ),
       'backend_embedding': backendEmbedding,
       'backend_name': backendName,
+      'review_confirmed': reviewConfirmed ? 1 : 0,
+      'biometric_profile_version': biometricProfileVersion,
+      'replacement_reason': replacementReason,
       'created_at': DateTime.now().toIso8601String(),
     };
   }
@@ -9118,8 +9576,20 @@ class StudentRecord {
         for (final value in jsonDecode(map['signature_json'] as String) as List)
           (value as num).toDouble(),
       ],
+      signatureSamples: [
+        for (final sample
+            in jsonDecode(
+                  (map['signature_samples_json'] as String?) ??
+                      jsonEncode([jsonDecode(map['signature_json'] as String)]),
+                )
+                as List)
+          [for (final value in sample as List) (value as num).toDouble()],
+      ],
       backendEmbedding: map['backend_embedding'] as String?,
       backendName: map['backend_name'] as String?,
+      reviewConfirmed: (map['review_confirmed'] as int? ?? 0) == 1,
+      biometricProfileVersion: (map['biometric_profile_version'] as int?) ?? 1,
+      replacementReason: (map['replacement_reason'] as String?) ?? '',
     );
   }
 
@@ -9149,10 +9619,19 @@ class StudentRecord {
         for (final value in (profile['signature'] as List? ?? const []))
           (value as num).toDouble(),
       ],
+      signatureSamples: [
+        for (final sample in (profile['embeddings'] as List? ?? const []))
+          [for (final value in sample as List) (value as num).toDouble()],
+      ],
       backendEmbedding: map['face_embedding'] as String?,
       backendName:
           map['embedding_backend'] as String? ??
           profile['embedding_backend'] as String?,
+      reviewConfirmed: (map['enrollment_status'] as String?) == 'approved',
+      biometricProfileVersion:
+          (map['biometric_profile_version'] as num?)?.toInt() ??
+          (profile['profile_version'] as num?)?.toInt() ??
+          1,
     );
   }
 }
@@ -9309,12 +9788,16 @@ class ExamEntryDecision {
     required this.reason,
     this.eligibilityType,
     this.otherSessionActivity = false,
+    this.stepUpRequired = false,
+    this.stepUpMethods = const [],
   });
 
   final String decision;
   final String reason;
   final String? eligibilityType;
   final bool otherSessionActivity;
+  final bool stepUpRequired;
+  final List<String> stepUpMethods;
   bool get verified => decision == 'VERIFIED';
 }
 
@@ -9729,8 +10212,12 @@ class ExamVerifyStore {
             note TEXT NOT NULL,
             photo_path TEXT NOT NULL,
             signature_json TEXT NOT NULL,
+            signature_samples_json TEXT,
             backend_embedding TEXT,
             backend_name TEXT,
+            review_confirmed INTEGER NOT NULL DEFAULT 0,
+            biometric_profile_version INTEGER NOT NULL DEFAULT 1,
+            replacement_reason TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
           )
         ''');
@@ -9748,7 +10235,8 @@ class ExamVerifyStore {
             mode TEXT NOT NULL,
             verified_at TEXT NOT NULL,
             previous_hash TEXT,
-            log_hash TEXT
+            log_hash TEXT,
+            pending_sync INTEGER NOT NULL DEFAULT 0
           )
         ''');
         await db.execute('''
@@ -9758,6 +10246,12 @@ class ExamVerifyStore {
           )
         ''');
         await _createExamSessionTables(db);
+        await db.execute('''
+          CREATE TABLE cache_metadata (
+            cache_key TEXT PRIMARY KEY,
+            cache_value TEXT NOT NULL
+          )
+        ''');
       },
     );
     await _ensureColumns(_database!);
@@ -9772,6 +10266,12 @@ class ExamVerifyStore {
       )
     ''');
     await _createExamSessionTables(db);
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cache_metadata (
+        cache_key TEXT PRIMARY KEY,
+        cache_value TEXT NOT NULL
+      )
+    ''');
     final studentColumns = await db.rawQuery('PRAGMA table_info(students)');
     final studentExisting = studentColumns
         .map((row) => row['name'] as String)
@@ -9813,6 +10313,26 @@ class ExamVerifyStore {
     if (!studentExisting.contains('student_status')) {
       await db.execute(
         "ALTER TABLE students ADD COLUMN student_status TEXT NOT NULL DEFAULT 'active'",
+      );
+    }
+    if (!studentExisting.contains('signature_samples_json')) {
+      await db.execute(
+        'ALTER TABLE students ADD COLUMN signature_samples_json TEXT',
+      );
+    }
+    if (!studentExisting.contains('review_confirmed')) {
+      await db.execute(
+        'ALTER TABLE students ADD COLUMN review_confirmed INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (!studentExisting.contains('biometric_profile_version')) {
+      await db.execute(
+        'ALTER TABLE students ADD COLUMN biometric_profile_version INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+    if (!studentExisting.contains('replacement_reason')) {
+      await db.execute(
+        "ALTER TABLE students ADD COLUMN replacement_reason TEXT NOT NULL DEFAULT ''",
       );
     }
     final logColumns = await db.rawQuery(
@@ -9857,6 +10377,11 @@ class ExamVerifyStore {
           whereArgs: [row['id']],
         );
       }
+    }
+    if (!logExisting.contains('pending_sync')) {
+      await db.execute(
+        'ALTER TABLE verification_logs ADD COLUMN pending_sync INTEGER NOT NULL DEFAULT 0',
+      );
     }
   }
 
@@ -9967,7 +10492,10 @@ class ExamVerifyStore {
     return rows.map(VerificationRecord.fromMap).toList();
   }
 
-  Future<void> addLog(VerificationRecord record) async {
+  Future<int> addLog(
+    VerificationRecord record, {
+    bool pendingSync = false,
+  }) async {
     final db = await database;
     final previous = await db.rawQuery(
       'SELECT log_hash FROM verification_logs WHERE log_hash IS NOT NULL ORDER BY id DESC LIMIT 1',
@@ -9979,7 +10507,58 @@ class ExamVerifyStore {
       previousHash: previousHash,
       logHash: auditChecksum(record, previousHash),
     );
-    await db.insert('verification_logs', signedRecord.toMap());
+    return db.insert('verification_logs', {
+      ...signedRecord.toMap(),
+      'pending_sync': pendingSync ? 1 : 0,
+    });
+  }
+
+  Future<List<VerificationRecord>> listPendingLogs() async {
+    final db = await database;
+    final rows = await db.query(
+      'verification_logs',
+      where: 'pending_sync = 1',
+      orderBy: 'id ASC',
+    );
+    return rows.map(VerificationRecord.fromMap).toList();
+  }
+
+  Future<void> markLogSynced(int id) async {
+    final db = await database;
+    await db.update(
+      'verification_logs',
+      {'pending_sync': 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> markExamCacheRefreshed() async {
+    final db = await database;
+    await db.insert('cache_metadata', {
+      'cache_key': 'exam_cache_refreshed_at',
+      'cache_value': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<DateTime?> examCacheRefreshedAt() async {
+    final db = await database;
+    final rows = await db.query(
+      'cache_metadata',
+      where: 'cache_key = ?',
+      whereArgs: ['exam_cache_refreshed_at'],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return DateTime.tryParse(rows.first['cache_value'] as String);
+  }
+
+  Future<bool> isExamCacheUsable({
+    Duration maximumAge = const Duration(hours: 24),
+  }) async {
+    final refreshedAt = await examCacheRefreshedAt();
+    return refreshedAt != null &&
+        DateTime.now().toUtc().difference(refreshedAt.toUtc()) <= maximumAge;
   }
 
   Future<void> clearLogs() async {
@@ -10019,6 +10598,68 @@ class ExamVerifyStore {
         await txn.insert('exam_session_students', row.toMap());
       }
     });
+  }
+
+  Future<ExamEntryDecision> evaluateOfflineExamEntry({
+    required int sessionId,
+    required StudentRecord? student,
+    required bool livenessPassed,
+    required bool identityMatched,
+  }) async {
+    if (!await isExamCacheUsable()) {
+      return const ExamEntryDecision(
+        decision: 'DENIED',
+        reason:
+            'Offline exam-session cache is missing or older than 24 hours. Reconnect before verifying students.',
+      );
+    }
+    if (!livenessPassed || !identityMatched || student?.id == null) {
+      return const ExamEntryDecision(
+        decision: 'DENIED',
+        reason: 'Offline verification requires a recognized live face.',
+      );
+    }
+    final db = await database;
+    final rows = await db.query(
+      'exam_session_students',
+      where: 'exam_session_id = ? AND student_id = ?',
+      whereArgs: [sessionId, student!.id],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return const ExamEntryDecision(
+        decision: 'DENIED',
+        reason: 'Student is not in the cached eligible roster for this exam.',
+      );
+    }
+    final row = rows.first;
+    if (row['eligibility_status'] != 'eligible') {
+      return const ExamEntryDecision(
+        decision: 'DENIED',
+        reason: 'Student is blocked from this cached exam session.',
+      );
+    }
+    if (row['attendance_status'] == 'verified') {
+      return const ExamEntryDecision(
+        decision: 'ALREADY_VERIFIED',
+        reason: 'Student was already verified in this cached exam session.',
+      );
+    }
+    await db.update(
+      'exam_session_students',
+      {
+        'attendance_status': 'verified',
+        'verified_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ? AND attendance_status != ?',
+      whereArgs: [row['id'], 'verified'],
+    );
+    return ExamEntryDecision(
+      decision: 'VERIFIED',
+      reason:
+          'Verified using the encrypted offline exam cache. Log pending synchronization.',
+      eligibilityType: row['eligibility_type'] as String?,
+    );
   }
 }
 
@@ -10434,6 +11075,27 @@ class FaceEngine {
     }
     return true;
   }
+
+  static bool canCompareStudent(StudentRecord student, List<double> live) {
+    final samples = student.signatureSamples.isEmpty
+        ? [student.signature]
+        : student.signatureSamples;
+    return samples.any((sample) => canCompareSignatures(sample, live));
+  }
+
+  static double minimumStudentDistance(
+    StudentRecord student,
+    List<double> live,
+  ) {
+    final samples = student.signatureSamples.isEmpty
+        ? [student.signature]
+        : student.signatureSamples;
+    final distances = [
+      for (final sample in samples)
+        if (canCompareSignatures(sample, live)) distance(sample, live),
+    ];
+    return distances.isEmpty ? 1.0 : distances.reduce(math.min);
+  }
 }
 
 class MobileFaceEmbeddingEngine {
@@ -10596,9 +11258,15 @@ class OnlineBackendClient {
       'photo_url': portablePortrait,
       'biometric_profile': {
         'signature': student.signature,
+        'embeddings': student.signatureSamples.isEmpty
+            ? [student.signature]
+            : student.signatureSamples,
         'embedding_backend': student.backendName ?? 'device_signature',
-        'enrollment_version': 1,
+        'enrollment_version': student.biometricProfileVersion,
       },
+      'review_confirmed': student.reviewConfirmed,
+      'replace_biometric_profile': student.replaceBiometricProfile,
+      'replacement_reason': student.replacementReason,
     });
   }
 
@@ -10873,6 +11541,11 @@ class OnlineBackendClient {
     required bool livenessPassed,
     required bool identityMatched,
     required String deviceType,
+    bool stepUpVerified = false,
+    String? stepUpMethod,
+    String assertedStudentNumberHash = '',
+    bool adminOverride = false,
+    String overrideReason = '',
   }) async {
     final response = await _postJson('/exam-sessions/$sessionId/verify', {
       'detected_student_id': student?.id,
@@ -10885,6 +11558,11 @@ class OnlineBackendClient {
       'device_type': deviceType,
       'device_id': ExamVerifyDevice.id,
       'device_name': ExamVerifyDevice.name,
+      'step_up_verified': stepUpVerified,
+      'step_up_method': stepUpMethod,
+      'asserted_student_number_hash': assertedStudentNumberHash,
+      'admin_override': adminOverride,
+      'override_reason': overrideReason,
     });
     return ExamEntryDecision(
       decision: response['decision'] as String,
@@ -10892,6 +11570,11 @@ class OnlineBackendClient {
       eligibilityType: response['eligibility_type'] as String?,
       otherSessionActivity:
           response['other_session_activity'] as bool? ?? false,
+      stepUpRequired: response['step_up_required'] as bool? ?? false,
+      stepUpMethods: [
+        for (final method in response['step_up_methods'] as List? ?? const [])
+          method.toString(),
+      ],
     );
   }
 

@@ -834,11 +834,18 @@ def register_student_page() -> None:
                 "Eligibility note",
                 placeholder="Optional note, e.g. fees cleared or pending approval",
             )
+            replacement_reason = st.text_input(
+                "Biometric replacement reason",
+                placeholder="Required only when replacing an existing enrollment",
+            )
         with right:
             uploaded_photo = st.file_uploader(
                 "Student ID/photo",
                 type=["jpg", "jpeg", "png"],
                 help="Use a clear front-facing photo for best verification results.",
+            )
+            review_confirmed = st.checkbox(
+                "I reviewed the student details and captured portrait"
             )
 
         submitted = st.form_submit_button("Register student", type="primary")
@@ -848,6 +855,9 @@ def register_student_page() -> None:
 
     if not student_number.strip() or not full_name.strip() or uploaded_photo is None:
         st.error("Student number, full name, and photo are required.")
+        return
+    if not review_confirmed:
+        st.error("Review and confirm the student details and portrait before saving.")
         return
 
     existing = get_student_by_number(student_number)
@@ -859,13 +869,23 @@ def register_student_page() -> None:
         save_uploaded_image(uploaded_photo, photo_path)
         face_embedding, embedding_backend = create_embedding_for_photo(photo_path)
         if existing:
+            if not replacement_reason.strip():
+                st.error(
+                    "This student already has a biometric profile. Enter a "
+                    "replacement reason before changing it."
+                )
+                return
             update_student_photo(
                 int(existing["id"]),
                 photo_path,
                 face_embedding=face_embedding,
                 embedding_backend=embedding_backend,
+                replacement_reason=replacement_reason,
             )
-            st.warning("This student number already existed, so the stored photo was updated.")
+            st.warning(
+                "Existing enrollment replaced after administrator review. "
+                "Previous approved embeddings were retained."
+            )
         else:
             add_student(
                 student_number,
@@ -1939,8 +1959,17 @@ def students_page() -> None:
             st.warning("The stored photo file for this student is missing.")
         if selected_student["embedding_backend"]:
             st.info(f"Stored embedding: {selected_student['embedding_backend']}")
+            st.caption(
+                "Approved biometric profile version "
+                f"{selected_student.get('biometric_profile_version', 1)}"
+            )
         else:
             st.warning("No stored face embedding yet. Generate one after installing FaceNet.")
+        refresh_reason = st.text_input(
+            "Embedding refresh reason",
+            key=f"embedding_reason_{selected_student['id']}",
+            placeholder="Required for controlled biometric replacement",
+        )
         if st.button(
             "Generate / refresh face embedding",
             disabled=not current_photo.exists(),
@@ -1948,14 +1977,18 @@ def students_page() -> None:
         ):
             face_embedding, embedding_backend = create_embedding_for_photo(current_photo)
             if embedding_backend:
-                update_student_photo(
-                    int(selected_student["id"]),
-                    current_photo,
-                    face_embedding=face_embedding,
-                    embedding_backend=embedding_backend,
-                )
-                st.success("Face embedding updated.")
-                st.rerun()
+                if not refresh_reason.strip():
+                    st.error("Enter a reason before replacing the biometric profile.")
+                else:
+                    update_student_photo(
+                        int(selected_student["id"]),
+                        current_photo,
+                        face_embedding=face_embedding,
+                        embedding_backend=embedding_backend,
+                        replacement_reason=refresh_reason,
+                    )
+                    st.success("Face embedding updated after administrator review.")
+                    st.rerun()
             else:
                 st.error(
                     "Could not create a FaceNet embedding. Install the optional FaceNet "
@@ -1994,6 +2027,10 @@ def students_page() -> None:
                 type=["jpg", "jpeg", "png"],
                 help="Leave empty if the current photo should stay unchanged.",
             )
+            replacement_reason = st.text_input(
+                "Photo replacement reason",
+                placeholder="Required when replacing the enrolled portrait",
+            )
             save_changes = st.form_submit_button("Save student changes", type="primary")
 
         if save_changes:
@@ -2011,6 +2048,11 @@ def students_page() -> None:
                         level=updated_level,
                     )
                     if replacement_photo is not None:
+                        if not replacement_reason.strip():
+                            st.error(
+                                "Enter a reason before replacing the enrolled portrait."
+                            )
+                            return
                         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                         filename = f"{safe_file_part(updated_student_number)}_{timestamp}.jpg"
                         photo_path = PHOTO_DIR / filename
@@ -2021,6 +2063,7 @@ def students_page() -> None:
                             photo_path,
                             face_embedding=face_embedding,
                             embedding_backend=embedding_backend,
+                            replacement_reason=replacement_reason,
                         )
                     st.success("Student record updated.")
                     st.rerun()

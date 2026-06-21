@@ -580,6 +580,20 @@ def evaluate_exam_entry(
         ExamSessionInvigilator.exam_session_id == session_id,
         ExamSessionInvigilator.invigilator_user_id == actor.id,
     ).first() is not None
+    asserted_hash_matches = bool(
+        student
+        and payload.asserted_student_number_hash
+        and payload.asserted_student_number_hash == student.student_number_hash
+    )
+    admin_step_up = bool(
+        payload.admin_override
+        and actor.role in {"Super Admin", "Admin"}
+        and payload.override_reason.strip()
+    )
+    ambiguous_identity = payload.confidence_gap < payload.minimum_confidence_gap
+    step_up_satisfied = bool(
+        payload.step_up_verified and (asserted_hash_matches or admin_step_up)
+    )
 
     if actor.role == "Invigilator" and session_has_assignments and not actor_is_assigned:
         reason = "Invigilator is not assigned to the selected exam session."
@@ -589,8 +603,12 @@ def evaluate_exam_entry(
         reason = "Liveness failed."
     elif payload.match_score > payload.match_threshold:
         reason = "Match score below threshold."
-    elif payload.confidence_gap < payload.minimum_confidence_gap:
-        reason = "Similarity gap too small / ambiguous identity."
+    elif ambiguous_identity and not step_up_satisfied:
+        decision = "STEP_UP_REQUIRED"
+        reason = (
+            "Ambiguous identity. Confirm the student's full ID number or "
+            "request an authorized administrator override."
+        )
     elif not payload.identity_matched or student is None:
         reason = "Face not recognized."
     elif not _student_has_face(student):
@@ -639,7 +657,11 @@ def evaluate_exam_entry(
             decision = "ALREADY_VERIFIED"
             reason = _already_verified_reason(eligibility, session)
 
-    if eligibility is not None and decision not in {"VERIFIED", "ALREADY_VERIFIED"}:
+    if eligibility is not None and decision not in {
+        "VERIFIED",
+        "ALREADY_VERIFIED",
+        "STEP_UP_REQUIRED",
+    }:
         eligibility.attendance_status = "denied"
         eligibility.updated_at = datetime.utcnow()
 
@@ -673,6 +695,8 @@ def evaluate_exam_entry(
         metadata_json=json.dumps(
             {
                 "admin_override": payload.admin_override,
+                "step_up_verified": payload.step_up_verified,
+                "step_up_method": payload.step_up_method,
                 "other_session_activity": other_session_activity,
                 "device_name": device.device_name if device else payload.device_name,
             },
@@ -738,7 +762,14 @@ def _student_has_face(student: Student) -> bool:
     except Exception:
         return False
     signature = profile.get("signature")
-    return bool(signature and isinstance(signature, list))
+    embeddings = profile.get("embeddings")
+    return bool(
+        (signature and isinstance(signature, list))
+        or (
+            isinstance(embeddings, list)
+            and any(isinstance(sample, list) and sample for sample in embeddings)
+        )
+    )
 
 
 def _read_import_rows(filename: str, content: bytes) -> list[dict]:
@@ -795,6 +826,12 @@ def _decision_dict(decision: str, reason: str, session: ExamSession, student: St
         "verified_by": eligibility.verified_by if eligibility else None,
         "verified_device_id": eligibility.verified_device_id if eligibility else None,
         "other_session_activity": other_session_activity,
+        "step_up_required": decision == "STEP_UP_REQUIRED",
+        "step_up_methods": (
+            ["student_id", "admin_override"]
+            if decision == "STEP_UP_REQUIRED"
+            else []
+        ),
     }
 
 
