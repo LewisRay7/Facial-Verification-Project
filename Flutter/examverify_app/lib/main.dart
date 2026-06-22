@@ -149,7 +149,25 @@ List<ExamSessionRecord> _dedupeExamSessions(
 }
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  unawaited(ExamVerifyStartup.warmUp());
   runApp(const ExamVerifyApp());
+}
+
+class ExamVerifyStartup {
+  static Future<void> warmUp() async {
+    try {
+      if (Platform.isAndroid || Platform.isIOS) {
+        await MobileFaceEmbeddingEngine.warmUp();
+      } else if (Platform.isWindows) {
+        await PythonFaceBackend.warmUp();
+      }
+      debugPrint('ExamVerify biometric engine warmed up.');
+    } catch (error, stackTrace) {
+      debugPrint('ExamVerify biometric warm-up deferred: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
 }
 
 class AppConfig {
@@ -11102,11 +11120,24 @@ class MobileFaceEmbeddingEngine {
   static const int inputSize = 112;
   static const int embeddingSize = 192;
   static tfl.Interpreter? _interpreter;
+  static Future<tfl.Interpreter>? _initializing;
+
+  static Future<void> warmUp() async {
+    final interpreter = await _getInterpreter();
+    final input = [
+      [
+        for (var y = 0; y < inputSize; y++)
+          [
+            for (var x = 0; x < inputSize; x++) [0.0, 0.0, 0.0],
+          ],
+      ],
+    ];
+    final output = [List<double>.filled(embeddingSize, 0)];
+    interpreter.run(input, output);
+  }
 
   static Future<List<double>> createEmbedding(imglib.Image face) async {
-    final interpreter = _interpreter ??= await tfl.Interpreter.fromAsset(
-      'assets/models/mobilefacenet.tflite',
-    );
+    final interpreter = await _getInterpreter();
     final balancedFace = _balanceLowLight(face);
     final resized = imglib.copyResize(
       balancedFace,
@@ -11136,6 +11167,27 @@ class MobileFaceEmbeddingEngine {
       throw FaceEngineException('Could not generate a biometric embedding.');
     }
     return raw.map((value) => value / norm).toList();
+  }
+
+  static Future<tfl.Interpreter> _getInterpreter() {
+    final loaded = _interpreter;
+    if (loaded != null) return Future.value(loaded);
+    final initializing = _initializing;
+    if (initializing != null) return initializing;
+
+    final future =
+        tfl.Interpreter.fromAsset('assets/models/mobilefacenet.tflite').then((
+          interpreter,
+        ) {
+          _interpreter = interpreter;
+          return interpreter;
+        });
+    _initializing = future;
+    return future.whenComplete(() {
+      if (identical(_initializing, future)) {
+        _initializing = null;
+      }
+    });
   }
 
   static imglib.Image _balanceLowLight(imglib.Image face) {
@@ -11729,11 +11781,19 @@ class PythonFaceBackend {
   static const int _port = 8765;
   static Process? _process;
 
+  static Future<void> warmUp() async {
+    if (!await available) {
+      throw FaceEngineException(
+        'The desktop face service could not finish warming up.',
+      );
+    }
+  }
+
   static Future<bool> get available async {
     if (!Platform.isWindows) return false;
     if (await _health()) return true;
     await _start();
-    for (var attempt = 0; attempt < 30; attempt++) {
+    for (var attempt = 0; attempt < 60; attempt++) {
       if (await _health()) return true;
       await Future<void>.delayed(const Duration(milliseconds: 500));
     }
@@ -11931,9 +11991,13 @@ class PythonFaceBackend {
         Uri.parse('http://127.0.0.1:$_port/health'),
       );
       final response = await request.close();
-      await response.drain<void>();
+      final responseBody = await utf8.decodeStream(response);
       client.close();
-      return response.statusCode == 200;
+      if (response.statusCode != 200) return false;
+      final decoded = jsonDecode(responseBody);
+      return decoded is Map<String, dynamic> &&
+          decoded['ok'] == true &&
+          decoded['mobilefacenet_ready'] == true;
     } catch (_) {
       return false;
     }
