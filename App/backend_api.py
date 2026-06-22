@@ -5,6 +5,8 @@ from functools import wraps
 import json
 import secrets
 import sys
+import threading
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +56,8 @@ MOBILEFACENET_MODEL_PATHS = (
     ROOT_DIR / "models" / "mobilefacenet.tflite",
 )
 _mobilefacenet_interpreter = None
+_mobilefacenet_lock = threading.Lock()
+_mobilefacenet_warmup_error: str | None = None
 
 
 def _mobilefacenet_model_path() -> Path | None:
@@ -82,6 +86,8 @@ def health():
             "service": "ExamVerify Face Backend",
             "mobilefacenet_model_available": model_path is not None,
             "mobilefacenet_model_path": str(model_path) if model_path else None,
+            "mobilefacenet_ready": _mobilefacenet_interpreter is not None,
+            "mobilefacenet_warmup_error": _mobilefacenet_warmup_error,
         }
     )
 
@@ -522,29 +528,52 @@ def _balance_low_light(cropped_face: np.ndarray) -> np.ndarray:
 
 
 def _generate_mobilefacenet_signature(cropped_face: np.ndarray) -> list[float]:
-    global _mobilefacenet_interpreter
-    if _mobilefacenet_interpreter is None:
-        model_path = _mobilefacenet_model_path()
-        if model_path is None:
-            raise FaceMatchError("The bundled MobileFaceNet model is unavailable.")
-        import tensorflow as tf
-
-        _mobilefacenet_interpreter = tf.lite.Interpreter(model_path=str(model_path))
-        _mobilefacenet_interpreter.allocate_tensors()
+    interpreter = _ensure_mobilefacenet_interpreter()
 
     balanced_face = _balance_low_light(cropped_face)
     resized = cv2.resize(balanced_face, (MOBILEFACENET_INPUT_SIZE, MOBILEFACENET_INPUT_SIZE))
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)
     input_tensor = np.expand_dims((rgb - 127.5) / 128.0, axis=0)
-    input_details = _mobilefacenet_interpreter.get_input_details()[0]
-    output_details = _mobilefacenet_interpreter.get_output_details()[0]
-    _mobilefacenet_interpreter.set_tensor(input_details["index"], input_tensor)
-    _mobilefacenet_interpreter.invoke()
-    raw = _mobilefacenet_interpreter.get_tensor(output_details["index"]).flatten()
+    input_details = interpreter.get_input_details()[0]
+    output_details = interpreter.get_output_details()[0]
+    interpreter.set_tensor(input_details["index"], input_tensor)
+    interpreter.invoke()
+    raw = interpreter.get_tensor(output_details["index"]).flatten()
     norm = np.linalg.norm(raw)
     if norm == 0:
         raise FaceMatchError("MobileFaceNet could not generate a biometric signature.")
     return [float(value) for value in raw / norm]
+
+
+def _ensure_mobilefacenet_interpreter():
+    global _mobilefacenet_interpreter, _mobilefacenet_warmup_error
+    if _mobilefacenet_interpreter is not None:
+        return _mobilefacenet_interpreter
+
+    with _mobilefacenet_lock:
+        if _mobilefacenet_interpreter is not None:
+            return _mobilefacenet_interpreter
+        model_path = _mobilefacenet_model_path()
+        if model_path is None:
+            raise FaceMatchError("The bundled MobileFaceNet model is unavailable.")
+        try:
+            import tensorflow as tf
+
+            interpreter = tf.lite.Interpreter(model_path=str(model_path))
+            interpreter.allocate_tensors()
+            input_details = interpreter.get_input_details()[0]
+            output_details = interpreter.get_output_details()[0]
+            input_shape = tuple(int(value) for value in input_details["shape"])
+            dummy_input = np.zeros(input_shape, dtype=input_details["dtype"])
+            interpreter.set_tensor(input_details["index"], dummy_input)
+            interpreter.invoke()
+            interpreter.get_tensor(output_details["index"])
+            _mobilefacenet_interpreter = interpreter
+            _mobilefacenet_warmup_error = None
+            return interpreter
+        except Exception as exc:
+            _mobilefacenet_warmup_error = str(exc)
+            raise
 
 
 def _error(message: str, status_code: int):
@@ -563,6 +592,13 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    started_at = time.perf_counter()
+    try:
+        _ensure_mobilefacenet_interpreter()
+        elapsed = time.perf_counter() - started_at
+        print(f"MobileFaceNet ready in {elapsed:.2f}s", flush=True)
+    except Exception as exc:
+        print(f"MobileFaceNet warm-up failed: {exc}", file=sys.stderr, flush=True)
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
 
 
